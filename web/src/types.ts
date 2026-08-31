@@ -8,8 +8,8 @@ export interface Health { status: string; mode: string; scheduleUpdated: string;
 export interface Order { id: string; exchange: string; ticker: string; rotation?: string; market: string; status: string; quantity: Money; filledQuantity: Money; limitPrice: Money; cashRisk: Money; createdAt: string }
 export interface Fill { id: string; exchange: string; ticker: string; rotation?: string; team?: string; market: string; quantity: Money; rawPrice: Money; allInMoneyline: number; fee: Money; cashRisk: Money; createdAt: string }
 export interface Position { exchange: string; ticker: string; rotation?: string; market: string; quantity: Money; cashRisk: Money; averagePrice: Money; currentPrice: Money; unrealizedPnl: Money }
-export interface SportOption { name: string; eventCount: number; enabled: boolean }
-export interface Settings { preferences: { enabledSports: string[] | null }; availableSports: SportOption[] }
+export interface SportOption { name: string; eventCount: number; addedGameCount: number; enabled: boolean }
+export interface Settings { preferences: { enabledSports: string[] | null; excludeAddedGames: boolean }; availableSports: SportOption[] }
 export interface Snapshot { events: Event[]; orders: Order[]; positions: Position[]; fills: Fill[]; health: Health; bankroll: Money; atRisk: Money; settings: Settings }
 export interface BookLevel { price: Money; quantity: Money }
 export interface OrderBook { ticker: string; sequence: number; updatedAt: string; stale: boolean; yes: BookLevel[]; no: BookLevel[] }

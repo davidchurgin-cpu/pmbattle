@@ -49,13 +49,14 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var input struct {
-		EnabledSports []string `json:"enabledSports"`
+		EnabledSports     []string `json:"enabledSports"`
+		ExcludeAddedGames bool     `json:"excludeAddedGames"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid settings"})
 		return
 	}
-	snapshot, err := s.service.UpdatePreferences(r.Context(), input.EnabledSports)
+	snapshot, err := s.service.UpdatePreferences(r.Context(), input.EnabledSports, input.ExcludeAddedGames)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to save settings"})
 		return

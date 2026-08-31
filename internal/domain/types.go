@@ -150,13 +150,15 @@ type Health struct {
 type Preferences struct {
 	// Nil means the user has not configured this setting yet, so all sports are enabled.
 	// A non-nil empty slice intentionally disables every sport.
-	EnabledSports []string `json:"enabledSports"`
+	EnabledSports     []string `json:"enabledSports"`
+	ExcludeAddedGames bool     `json:"excludeAddedGames"`
 }
 
 type SportOption struct {
-	Name       string `json:"name"`
-	EventCount int    `json:"eventCount"`
-	Enabled    bool   `json:"enabled"`
+	Name           string `json:"name"`
+	EventCount     int    `json:"eventCount"`
+	AddedGameCount int    `json:"addedGameCount"`
+	Enabled        bool   `json:"enabled"`
 }
 
 type Settings struct {

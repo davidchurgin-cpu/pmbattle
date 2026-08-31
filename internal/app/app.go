@@ -57,7 +57,7 @@ func (s *Service) Run(ctx context.Context) {
 	<-ctx.Done()
 }
 
-func (s *Service) UpdatePreferences(ctx context.Context, enabled []string) (domain.Snapshot, error) {
+func (s *Service) UpdatePreferences(ctx context.Context, enabled []string, excludeAddedGames bool) (domain.Snapshot, error) {
 	clean := make([]string, 0, len(enabled))
 	seen := map[string]bool{}
 	for _, sport := range enabled {
@@ -68,7 +68,7 @@ func (s *Service) UpdatePreferences(ctx context.Context, enabled []string) (doma
 		}
 	}
 	sort.Strings(clean)
-	preferences := domain.Preferences{EnabledSports: clean}
+	preferences := domain.Preferences{EnabledSports: clean, ExcludeAddedGames: excludeAddedGames}
 	payload, err := json.Marshal(preferences)
 	if err != nil {
 		return domain.Snapshot{}, err
@@ -424,16 +424,16 @@ func seedAccount(snapshot *domain.Snapshot) {
 func SportKey(value string) string { return strings.ToUpper(strings.TrimSpace(value)) }
 
 func filterEvents(events []domain.CanonicalEvent, preferences domain.Preferences) []domain.CanonicalEvent {
-	if preferences.EnabledSports == nil {
-		return append([]domain.CanonicalEvent(nil), events...)
-	}
 	enabled := map[string]bool{}
 	for _, sport := range preferences.EnabledSports {
 		enabled[SportKey(sport)] = true
 	}
-	filtered := make([]domain.CanonicalEvent, 0)
+	filtered := make([]domain.CanonicalEvent, 0, len(events))
 	for _, event := range events {
-		if enabled[SportKey(event.Sport)] {
+		if preferences.ExcludeAddedGames && isAddedGame(event) {
+			continue
+		}
+		if preferences.EnabledSports == nil || enabled[SportKey(event.Sport)] {
 			filtered = append(filtered, event)
 		}
 	}
@@ -442,8 +442,13 @@ func filterEvents(events []domain.CanonicalEvent, preferences domain.Preferences
 
 func buildSettings(events []domain.CanonicalEvent, preferences domain.Preferences) domain.Settings {
 	counts := map[string]int{}
+	addedCounts := map[string]int{}
 	for _, event := range events {
-		counts[SportKey(event.Sport)]++
+		name := SportKey(event.Sport)
+		counts[name]++
+		if isAddedGame(event) {
+			addedCounts[name]++
+		}
 	}
 	names := make([]string, 0, len(counts))
 	for name := range counts {
@@ -457,7 +462,19 @@ func buildSettings(events []domain.CanonicalEvent, preferences domain.Preference
 	}
 	options := make([]domain.SportOption, 0, len(names))
 	for _, name := range names {
-		options = append(options, domain.SportOption{Name: name, EventCount: counts[name], Enabled: all || enabled[name]})
+		options = append(options, domain.SportOption{Name: name, EventCount: counts[name], AddedGameCount: addedCounts[name], Enabled: all || enabled[name]})
 	}
 	return domain.Settings{Preferences: preferences, AvailableSports: options}
+}
+
+func isAddedGame(event domain.CanonicalEvent) bool {
+	if len(event.ID) != 6 {
+		return false
+	}
+	for _, character := range event.ID {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }

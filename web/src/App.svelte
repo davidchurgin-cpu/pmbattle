@@ -2,9 +2,10 @@
   import { onMount } from 'svelte'
   import type { Event, Fill, Health, Order, OrderBook, Position, PriceQuote, Settings, Snapshot } from './types'
 
-  let snapshot: Snapshot = { events: [], orders: [], positions: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', latencyMs: 0, tradingEnabled: false }, bankroll: 0, atRisk: 0, settings: { preferences: { enabledSports: null }, availableSports: [] } }
+  let snapshot: Snapshot = { events: [], orders: [], positions: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', latencyMs: 0, tradingEnabled: false }, bankroll: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
   let view: 'schedule' | 'settings' = 'schedule'
   let draftSports: string[] = []
+  let draftExcludeAddedGames = false
   let settingsStatus = ''
   let query = ''
   let selectedSport = 'ALL'
@@ -38,7 +39,7 @@
   async function savePreferences() {
     settingsStatus = 'Saving…'
     try {
-      const response = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabledSports: draftSports }) })
+      const response = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabledSports: draftSports, excludeAddedGames: draftExcludeAddedGames }) })
       if (!response.ok) throw new Error('Unable to save sports preferences')
       snapshot = await response.json(); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); selectedSport = 'ALL'; selectedLeague = 'ALL'; selectedDate = 'ALL'; settingsStatus = 'Saved'
     } catch (cause) { settingsStatus = cause instanceof Error ? cause.message : 'Unable to save settings' }
@@ -51,7 +52,7 @@
   function applyStream(message: { type: string; data: unknown }) {
     if (message.type === 'schedule') snapshot = { ...snapshot, events: message.data as Event[] }
     if (message.type === 'health') snapshot = { ...snapshot, health: message.data as Health }
-    if (message.type === 'settings') { snapshot = { ...snapshot, settings: message.data as Settings }; draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name) }
+    if (message.type === 'settings') { snapshot = { ...snapshot, settings: message.data as Settings }; draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames }
     if (message.type === 'orderbook') { const next = message.data as OrderBook; if (next.ticker === selectedQuote?.ticker) book = next }
     if (message.type === 'book_stale') { const next = message.data as OrderBook; if (next.ticker === selectedQuote?.ticker) book = { ...next, stale: true } }
     if (message.type === 'fill') { const next = message.data as Fill; snapshot = { ...snapshot, fills: [next, ...snapshot.fills].slice(0, 250) } }
@@ -66,7 +67,7 @@
   }
   onMount(async () => {
     document.documentElement.dataset.theme = theme
-    try { const response = await fetch('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = await response.json(); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); const first = snapshot.events.find(event => event.markets?.[0]?.away || event.markets?.[0]?.home); if (first) select(first, first.markets?.[0]?.home || first.markets?.[0]?.away); connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
+    try { const response = await fetch('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = await response.json(); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; const first = snapshot.events.find(event => event.markets?.[0]?.away || event.markets?.[0]?.home); if (first) select(first, first.markets?.[0]?.home || first.markets?.[0]?.away); connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
   })
   $: document.documentElement.dataset.theme = theme
 </script>
@@ -152,9 +153,10 @@
         <div class="settings-heading"><div><h2>Sports</h2><p>Unchecked sports are removed from the schedule and Kalshi subscriptions.</p></div><div class="settings-actions"><button on:click={() => draftSports = snapshot.settings.availableSports.map(option => option.name)}>Select all</button><button on:click={() => draftSports = []}>Clear</button></div></div>
         <div class="sport-options">
           {#each snapshot.settings.availableSports as option}
-            <label><input type="checkbox" checked={draftSports.includes(option.name)} on:change={(event) => editSport(option.name, event.currentTarget.checked)} /><span><b>{option.name}</b><small>{option.eventCount.toLocaleString()} scheduled events</small></span></label>
+            <label><input type="checkbox" checked={draftSports.includes(option.name)} on:change={(event) => editSport(option.name, event.currentTarget.checked)} /><span><b>{option.name}</b><small>{option.eventCount.toLocaleString()} events · {option.addedGameCount.toLocaleString()} added</small></span></label>
           {:else}<div class="empty">Sports will appear after the schedule loads.</div>{/each}
         </div>
+        <label class="preference-row"><input type="checkbox" bind:checked={draftExcludeAddedGames} /><span><b>Hide extra / added games</b><small>Exclude games with six-digit event IDs. These markets generally have lower limits.</small></span></label>
         <div class="settings-footer"><span aria-live="polite">{settingsStatus}</span><button class="save-settings" on:click={savePreferences}>Save preferences</button></div>
       </section>
     </main>

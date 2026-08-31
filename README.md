@@ -17,6 +17,7 @@ The current release is deliberately **read-only**. It includes the live schedule
 - SQLite WAL persistence for schedules, mappings, settings, and audit records
 - Standard light and dark themes
 - Persisted Settings tab for enabling only the sports you want to load and subscribe to
+- Optional filter for six-digit extra/added games with lower market limits
 - Windows, Linux, and Docker builds
 
 ## Quick start
