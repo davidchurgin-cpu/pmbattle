@@ -72,13 +72,22 @@ type PriceQuote struct {
 }
 
 type MarketView struct {
-	Type   MarketType  `json:"type"`
-	Line   string      `json:"line,omitempty"`
+	Type    MarketType     `json:"type"`
+	Line    string         `json:"line,omitempty"`
+	Away    *PriceQuote    `json:"away,omitempty"`
+	Home    *PriceQuote    `json:"home,omitempty"`
+	Over    *PriceQuote    `json:"over,omitempty"`
+	Under   *PriceQuote    `json:"under,omitempty"`
+	Options []MarketOption `json:"options,omitempty"`
+	Status  string         `json:"status"`
+}
+
+type MarketOption struct {
+	Line   string      `json:"line"`
 	Away   *PriceQuote `json:"away,omitempty"`
 	Home   *PriceQuote `json:"home,omitempty"`
 	Over   *PriceQuote `json:"over,omitempty"`
 	Under  *PriceQuote `json:"under,omitempty"`
-	Status string      `json:"status"`
 }
 
 type BookLevel struct {

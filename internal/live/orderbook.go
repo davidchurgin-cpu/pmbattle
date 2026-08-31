@@ -70,6 +70,18 @@ func (b *Books) MarkAllStale() {
 	}
 }
 
+func (b *Books) MarkStale(ticker string) (domain.OrderBook, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	book, ok := b.books[ticker]
+	if !ok {
+		return domain.OrderBook{}, false
+	}
+	book.Stale = true
+	b.books[ticker] = book
+	return book, true
+}
+
 func (b *Books) Get(ticker string) (domain.OrderBook, bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -79,5 +91,7 @@ func (b *Books) Get(ticker string) (domain.OrderBook, bool) {
 
 func sortLevels(book *domain.OrderBook) {
 	sort.Slice(book.Yes, func(i, j int) bool { return book.Yes[i].Price > book.Yes[j].Price })
-	sort.Slice(book.No, func(i, j int) bool { return book.No[i].Price > book.No[j].Price })
+	// With use_yes_price enabled, Kalshi's no side is the YES ask ladder.
+	// Lowest ask belongs nearest the center of the book.
+	sort.Slice(book.No, func(i, j int) bool { return book.No[i].Price < book.No[j].Price })
 }

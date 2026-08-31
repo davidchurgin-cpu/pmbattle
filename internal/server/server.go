@@ -30,6 +30,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/settings", s.settings)
 	mux.HandleFunc("PUT /api/settings", s.updateSettings)
 	mux.HandleFunc("GET /api/books/{ticker}", s.book)
+	mux.HandleFunc("DELETE /api/books/{ticker}", s.releaseBook)
 	mux.HandleFunc("GET /api/ws", s.ws)
 	if s.static != nil {
 		mux.Handle("/", spaHandler(s.static))
@@ -64,12 +65,20 @@ func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snapshot)
 }
 func (s *Server) book(w http.ResponseWriter, r *http.Request) {
-	book, ok := s.service.Book(r.PathValue("ticker"))
-	if !ok {
+	ticker := r.PathValue("ticker")
+	if !s.service.RequestBook(ticker) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "book not available"})
 		return
 	}
-	writeJSON(w, http.StatusOK, book)
+	if book, ok := s.service.Book(ticker); ok && !book.Stale {
+		writeJSON(w, http.StatusOK, book)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"ticker": ticker, "sequence": 0, "stale": true, "yes": []any{}, "no": []any{}})
+}
+func (s *Server) releaseBook(w http.ResponseWriter, r *http.Request) {
+	s.service.ReleaseBook(r.PathValue("ticker"))
+	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)

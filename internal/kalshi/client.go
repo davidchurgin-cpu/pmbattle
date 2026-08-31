@@ -239,7 +239,18 @@ func (c *Client) Snapshot(ctx context.Context) ([]domain.Order, []domain.Positio
 	return ordersPayload.Orders, nil, nil, nil
 }
 
-func (c *Client) Subscribe(ctx context.Context, tickers []string) (*exchange.Subscription, error) {
+func (c *Client) SubscribeAccount(ctx context.Context) (*exchange.Subscription, error) {
+	return c.subscribe(ctx, []string{"fill", "user_orders", "market_positions", "market_lifecycle_v2"}, nil, false)
+}
+
+func (c *Client) SubscribeBooks(ctx context.Context, tickers []string) (*exchange.Subscription, error) {
+	if len(tickers) == 0 {
+		return nil, errors.New("at least one market ticker is required for an order-book subscription")
+	}
+	return c.subscribe(ctx, []string{"ticker", "orderbook_delta"}, tickers, true)
+}
+
+func (c *Client) subscribe(ctx context.Context, channels, tickers []string, useYesPrice bool) (*exchange.Subscription, error) {
 	if c.key == nil || c.cfg.KeyID == "" {
 		return nil, errors.New("kalshi websocket requires PMBATTLE_KALSHI_KEY_ID and private key")
 	}
@@ -253,8 +264,10 @@ func (c *Client) Subscribe(ctx context.Context, tickers []string) (*exchange.Sub
 	}
 	events := make(chan domain.StreamEvent, 256)
 	errs := make(chan error, 1)
-	channels := []string{"ticker", "orderbook_delta", "fill", "user_orders", "market_positions", "market_lifecycle_v2"}
-	params := map[string]any{"channels": channels, "use_yes_price": true}
+	params := map[string]any{"channels": channels}
+	if useYesPrice {
+		params["use_yes_price"] = true
+	}
 	if len(tickers) > 0 {
 		params["market_tickers"] = tickers
 	}

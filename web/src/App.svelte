@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { Event, Fill, Health, Order, OrderBook, Position, PriceQuote, Settings, Snapshot } from './types'
+  import type { BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, Position, PriceQuote, Settings, Snapshot } from './types'
 
   let snapshot: Snapshot = { events: [], orders: [], positions: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', latencyMs: 0, tradingEnabled: false }, bankroll: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
   let view: 'schedule' | 'settings' = 'schedule'
@@ -13,6 +13,9 @@
   let selectedDate = 'ALL'
   let selectedQuote: PriceQuote | null = null
   let selectedEvent: Event | null = null
+  let selectedMarket: MarketView | null = null
+  let expandedEventID = ''
+  let bookSide: 'yes' | 'no' = 'yes'
   let book: OrderBook | null = null
   let trayOpen = true
   let trayTab: 'orders' | 'positions' | 'fills' | 'history' = 'fills'
@@ -29,6 +32,17 @@
     const value = Number(line || 0) * (away ? -1 : 1)
     return value > 0 ? `+${value}` : `${value}`
   }
+  const ceilDiv = (value: bigint, divisor: bigint) => (value + divisor - 1n) / divisor
+  const takerQuote = (level: BookLevel) => {
+    const d = 10000n, price = BigInt(level.price), quantity = BigInt(level.quantity)
+    const fee = ceilDiv(700n * quantity * price * (d - price), d * d * d)
+    const cost = ceilDiv(price * quantity, d) + fee
+    const effective = Number(ceilDiv(cost * d, quantity))
+    const moneyline = effective === 5000 ? 100 : effective < 5000 ? Math.round(100 * (10000 - effective) / effective) : -Math.round(100 * effective / (10000 - effective))
+    return { fee: Number(fee), cost: Number(cost), moneyline }
+  }
+  const levelPrice = (level: BookLevel) => `${ml(Math.round(level.price < 5000 ? 100 * (10000 - level.price) / level.price : -100 * level.price / (10000 - level.price)))} → ${ml(takerQuote(level).moneyline)}`
+  const marketLabel = (market: MarketView | null) => market?.type === 'spread' ? 'Spread' : market?.type === 'total' ? 'Total' : 'Moneyline'
 
   $: sports = ['ALL', ...new Set(snapshot.events.map(event => event.sport.toUpperCase()))]
   $: leagues = ['ALL', ...new Set(snapshot.events.filter(event => selectedSport === 'ALL' || event.sport.toUpperCase() === selectedSport).map(event => event.league.toUpperCase()))]
@@ -48,10 +62,23 @@
       snapshot = await response.json(); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); selectedSport = 'ALL'; selectedLeague = 'ALL'; selectedDate = 'ALL'; settingsStatus = 'Saved'
     } catch (cause) { settingsStatus = cause instanceof Error ? cause.message : 'Unable to save settings' }
   }
-  async function select(event: Event, quote?: PriceQuote) {
+  async function select(event: Event, quote?: PriceQuote, market?: MarketView) {
     if (!quote) return
-    selectedEvent = event; selectedQuote = quote; book = null
-    try { const response = await fetch(`/api/books/${encodeURIComponent(quote.ticker)}`); if (response.ok) book = await response.json() } catch { /* the ticker stream may not have produced a book yet */ }
+    selectedEvent = event; selectedQuote = quote; selectedMarket = market || event.markets?.find(value => [value.away, value.home, value.over, value.under].some(valueQuote => valueQuote?.ticker === quote.ticker)) || null; expandedEventID = event.id; book = null
+    try { const response = await fetch(`/api/books/${encodeURIComponent(quote.ticker)}`); if (response.ok) book = await response.json() } catch { /* the live snapshot will arrive over the browser stream */ }
+  }
+  function toggleGame(event: Event) {
+    if (expandedEventID === event.id) { if (selectedQuote) fetch(`/api/books/${encodeURIComponent(selectedQuote.ticker)}`, { method: 'DELETE' }).catch(() => {}); expandedEventID = ''; selectedEvent = null; selectedQuote = null; selectedMarket = null; book = null; return }
+    const market = event.markets?.find(value => value.home || value.away || value.over || value.under)
+    select(event, market?.home || market?.away || market?.over || market?.under, market)
+  }
+  function selectOption(option: MarketOption) {
+    if (!selectedEvent || !selectedMarket || !selectedQuote) return
+    let quote: PriceQuote | undefined
+    if (selectedMarket.type === 'spread') quote = selectedQuote.outcome === selectedEvent.participants[0]?.name ? option.away : option.home
+    if (selectedMarket.type === 'total') quote = selectedQuote.outcome === 'Over' ? option.over : option.under
+    const market: MarketView = { ...selectedMarket, line: option.line, away: option.away, home: option.home, over: option.over, under: option.under }
+    select(selectedEvent, quote, market)
   }
   function applyStream(message: { type: string; data: unknown }) {
     if (message.type === 'schedule') snapshot = { ...snapshot, events: message.data as Event[] }
@@ -71,7 +98,7 @@
   }
   onMount(async () => {
     document.documentElement.dataset.theme = theme
-    try { const response = await fetch('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = await response.json(); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; const first = snapshot.events.find(event => event.markets?.[0]?.away || event.markets?.[0]?.home); if (first) select(first, first.markets?.[0]?.home || first.markets?.[0]?.away); connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
+    try { const response = await fetch('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = await response.json(); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
   })
   $: document.documentElement.dataset.theme = theme
 </script>
@@ -105,33 +132,50 @@
         {@const moneyline = event.markets?.find(market => market.type === 'moneyline')}
         {@const spreadMarket = event.markets?.find(market => market.type === 'spread')}
         {@const total = event.markets?.find(market => market.type === 'total')}
-        <section class="game" class:selected={selectedEvent?.id === event.id}>
+        <div class="game-wrap" class:expanded={expandedEventID === event.id}>
+        <section class="game" class:selected={selectedEvent?.id === event.id} role="button" tabindex="0" on:click={() => toggleGame(event)} on:keydown={(key) => { if (key.key === 'Enter' || key.key === ' ') toggleGame(event) }}>
           <div class="rotations">{#each event.participants as participant}<b>{participant.rotation}</b>{/each}</div>
           <div class="teams">{#each event.participants as participant}<div><strong>{participant.name}</strong><small>{participant.abbreviation}</small></div>{/each}</div>
-          <div class="market">{#if moneyline}{#each [moneyline.away, moneyline.home] as quote}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click={() => select(event, quote)}><b>{ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
-          <div class="market">{#if spreadMarket}{#each [spreadMarket.away, spreadMarket.home] as quote, index}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click={() => select(event, quote)}><b>{spread(spreadMarket.line, index === 0)} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
-          <div class="market">{#if total}{#each [total.over, total.under] as quote, index}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click={() => select(event, quote)}><b>{index === 0 ? 'O' : 'U'} {total.line} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
-          <div class="start"><b>{day(event.startTime)}</b><span>{time(event.startTime)}</span></div>
+          <div class="market">{#if moneyline}{#each [moneyline.away, moneyline.home] as quote}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, moneyline)}><b>{ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
+          <div class="market">{#if spreadMarket}{#each [spreadMarket.away, spreadMarket.home] as quote, index}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, spreadMarket)}><b>{spread(spreadMarket.line, index === 0)} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
+          <div class="market">{#if total}{#each [total.over, total.under] as quote, index}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, total)}><b>{index === 0 ? 'O' : 'U'} {total.line} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
+          <div class="start"><b>{day(event.startTime)}</b><span>{time(event.startTime)}</span><small>{expandedEventID === event.id ? 'Close ▲' : 'Book ▼'}</small></div>
         </section>
+        {#if expandedEventID === event.id && selectedEvent?.id === event.id && selectedQuote && selectedMarket}
+          <section class="inline-book" aria-label="Live order book">
+            <header class="book-toolbar">
+              <div class="book-market-title"><small>{marketLabel(selectedMarket)}</small><h2>{selectedQuote.outcome}{selectedMarket.line ? ` ${selectedMarket.line}` : ''}</h2></div>
+              {#if selectedMarket.options?.length}
+                <div class="strikes" aria-label="Market lines">
+                  {#each selectedMarket.options as option}<button class:active={option.line === selectedMarket.line} on:click={() => selectOption(option)}>{option.line}</button>{/each}
+                </div>
+              {/if}
+              <div class="top-quote"><b>{ml(selectedQuote.allInMoneyline)}</b><small>fee included</small></div>
+              <div class="book-state" class:stale={!book || book.stale}><i></i>{!book ? 'CONNECTING' : book.stale ? 'STALE' : 'LIVE'}</div>
+            </header>
+            <nav class="trade-tabs"><button class:active={bookSide === 'yes'} on:click={() => bookSide = 'yes'}>Trade Yes</button><button class:active={bookSide === 'no'} on:click={() => bookSide = 'no'}>Trade No</button><span>READ-ONLY</span></nav>
+            <div class="ladder-head"><span></span><span>Price <small>raw → fee included</small></span><span>Contracts</span><span>Total</span></div>
+            {#if book && (book.no.length || book.yes.length)}
+              <div class="ladder asks">
+                {#each [...book.no.slice(0, 6)].reverse() as level}
+                  <div class="ladder-row" style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...book.no.map(value => Number(value.quantity))) * 100)}%`}><b>ASK</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></div>
+                {/each}
+              </div>
+              <div class="book-center"><b>Trade {bookSide === 'yes' ? 'Yes' : 'No'}</b><span>{selectedQuote.outcome}</span></div>
+              <div class="ladder bids">
+                {#each book.yes.slice(0, 6) as level}
+                  <div class="ladder-row" style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...book.yes.map(value => Number(value.quantity))) * 100)}%`}><b>BID</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></div>
+                {/each}
+              </div>
+            {:else}
+              <div class="book-wait"><b>Opening live order book…</b><span>Only this selected market is being loaded.</span></div>
+            {/if}
+            <footer class="book-footer"><span>Kalshi · {selectedQuote.ticker}</span><span>Maker estimate {money(selectedQuote.makerFee)} · Taker estimate {money(selectedQuote.takerFee)}</span></footer>
+          </section>
+        {/if}
+        </div>
       {:else}<div class="empty">No matching games</div>{/each}
     </main>
-
-    <aside class="detail">
-      <div class="detail-title"><b>Live order book</b><span class:stale={book?.stale}><i></i>{book?.stale ? 'STALE' : 'LIVE'} · {snapshot.health.latencyMs || 18} ms</span></div>
-      {#if selectedQuote && selectedEvent}
-        <div class="selection"><b>#{selectedEvent.participants.find(p => p.name === selectedQuote?.outcome)?.rotation || ''} {selectedQuote.outcome}</b><span>All-in {ml(selectedQuote.allInMoneyline)} · Raw {ml(selectedQuote.rawMoneyline)}</span></div>
-        <div class="book-head"><span>Side</span><span>Size</span><span>Raw</span><span>All-in</span></div>
-        {#if book}
-          {#each [...book.yes.slice(0, 4)] as level}<div class="book-row"><span>YES</span><span>{qty(level.quantity)}</span><span>{money(level.price)}</span><span>{ml(selectedQuote.allInMoneyline)}</span></div>{/each}
-          {#each [...book.no.slice(0, 4)] as level}<div class="book-row"><span>NO</span><span>{qty(level.quantity)}</span><span>{money(level.price)}</span><span>{ml(selectedQuote.allInMoneyline)}</span></div>{/each}
-        {:else}
-          <div class="book-row"><span>YES</span><span>{qty(selectedQuote.availableQuantity)}</span><span>{money(selectedQuote.rawPrice)}</span><span>{ml(selectedQuote.allInMoneyline)}</span></div>
-          <p class="waiting">Waiting for book snapshot…</p>
-        {/if}
-        <dl><div><dt>Maker fee</dt><dd>{money(selectedQuote.makerFee)}</dd></div><div><dt>Taker fee</dt><dd>{money(selectedQuote.takerFee)}</dd></div><div><dt>Mapping</dt><dd>Verified</dd></div></dl>
-      {:else}<div class="empty">Select a market price</div>{/if}
-      <div class="readonly">READ-ONLY RELEASE · ORDER ENTRY DISABLED</div>
-    </aside>
   </div>
 
   <section class="tray" class:open={trayOpen}>

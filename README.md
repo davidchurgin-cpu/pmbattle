@@ -13,6 +13,8 @@ The current release is deliberately **read-only**. It includes the live schedule
 - Fee-adjusted American moneylines as the primary displayed price
 - Moneyline, spread, and total columns in the simulated sportsbook board
 - Kalshi demo/production endpoints, RSA-PSS request signing, and authenticated WebSocket connection
+- Click-to-expand, full-depth inline order-book ladders with bids, asks, contracts, cash totals, and raw-to-fee-included moneylines
+- On-demand order-book subscriptions: PMBattle loads only the selected market, releases it when closed, and never streams every game unnecessarily
 - Sequence-checked in-memory order books with stale-book detection
 - Live browser stream for books, health, fills, orders, and positions
 - SQLite WAL persistence for schedules, mappings, settings, and audit records
@@ -88,6 +90,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 
 - Uncertain market mappings are not displayed as tradable markets.
 - WebSocket sequence gaps are validated at Kalshi's subscription level; a gap reconnects the feed and marks cached books stale until fresh snapshots arrive.
+- Account activity stays connected independently from the on-demand order book, so orders and fills remain live while no game is expanded.
 - The UI clearly identifies simulated/live mode and stale data.
 - Credentials never pass through the browser.
 - The server enforces same-origin browser WebSockets and basic security headers.

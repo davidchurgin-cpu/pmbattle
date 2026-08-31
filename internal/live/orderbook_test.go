@@ -30,3 +30,16 @@ func TestOrderBookRequiresSnapshot(t *testing.T) {
 		t.Fatalf("expected missing-snapshot stale book")
 	}
 }
+
+func TestOrderBookSortsBidsDownAndUnifiedAsksUp(t *testing.T) {
+	books := NewBooks()
+	books.Snapshot(domain.OrderBook{
+		Ticker: "TEST",
+		Yes:    []domain.BookLevel{{Price: 4300}, {Price: 4700}, {Price: 4500}},
+		No:     []domain.BookLevel{{Price: 5800}, {Price: 5200}, {Price: 5500}},
+	})
+	book, ok := books.Get("TEST")
+	if !ok || book.Yes[0].Price != 4700 || book.No[0].Price != 5200 {
+		t.Fatalf("unexpected best prices: %+v", book)
+	}
+}

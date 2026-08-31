@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,10 +37,13 @@ type Service struct {
 	snapshot        domain.Snapshot
 	subscribers     map[chan domain.StreamEvent]struct{}
 	restartExchange chan struct{}
+	bookRequests    chan string
+	availableBooks  map[string]bool
+	activeBook      string
 }
 
 func New(cfg Config, store *storage.Store, adapter exchange.Adapter) *Service {
-	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1)}
+	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1), bookRequests: make(chan string, 1), availableBooks: make(map[string]bool)}
 	s.snapshot.Health = domain.Health{Status: "starting", Mode: map[bool]string{true: "simulated", false: "live"}[cfg.Simulated], ExchangeState: "disconnected", TradingEnabled: false}
 	return s
 }
@@ -54,6 +58,7 @@ func (s *Service) Run(ctx context.Context) {
 	s.refreshSchedule(ctx)
 	go s.scheduleLoop(ctx)
 	go s.exchangeManager(ctx)
+	go s.bookManager(ctx)
 	<-ctx.Done()
 }
 
@@ -105,6 +110,48 @@ func (s *Service) Snapshot() domain.Snapshot {
 }
 
 func (s *Service) Book(ticker string) (domain.OrderBook, bool) { return s.books.Get(ticker) }
+
+// RequestBook switches the one live order-book subscription to ticker. Only
+// tickers produced by accepted schedule mappings may be requested.
+func (s *Service) RequestBook(ticker string) bool {
+	s.mu.RLock()
+	allowed := s.availableBooks[ticker]
+	active := s.activeBook
+	simulated := s.cfg.Simulated
+	s.mu.RUnlock()
+	if !allowed {
+		return false
+	}
+	if active != ticker {
+		if simulated {
+			s.seedSimulatedBook(ticker)
+		} else {
+			s.queueBook(ticker)
+		}
+	}
+	return true
+}
+
+func (s *Service) ReleaseBook(ticker string) {
+	s.mu.RLock()
+	active := s.activeBook
+	s.mu.RUnlock()
+	if active == ticker {
+		s.queueBook("")
+	}
+}
+
+func (s *Service) queueBook(ticker string) {
+	select {
+	case s.bookRequests <- ticker:
+	default:
+		select {
+		case <-s.bookRequests:
+		default:
+		}
+		s.bookRequests <- ticker
+	}
+}
 
 func (s *Service) Subscribe() (chan domain.StreamEvent, func()) {
 	ch := make(chan domain.StreamEvent, 128)
@@ -192,7 +239,11 @@ func (s *Service) setEvents(events []domain.CanonicalEvent, publish bool) {
 	if s.cfg.Simulated {
 		seedAccount(&s.snapshot)
 	}
+	visible := append([]domain.CanonicalEvent(nil), s.snapshot.Events...)
 	s.mu.Unlock()
+	if s.cfg.Simulated {
+		s.setAvailableBooks(eventTickers(visible))
+	}
 	if publish {
 		s.broadcast(domain.StreamEvent{Type: "schedule", Data: s.Snapshot().Events})
 	}
@@ -251,7 +302,8 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 	if !s.cfg.Simulated {
 		tickers = s.attachMatched(matched)
 	}
-	slog.Info("market mapping complete", "accepted_markets", accepted, "subscribed_books", len(tickers))
+	s.setAvailableBooks(tickers)
+	slog.Info("market mapping complete", "accepted_markets", accepted, "available_books", len(tickers))
 	orders, positions, fills, err := s.exchange.Snapshot(ctx)
 	if err == nil {
 		s.mu.Lock()
@@ -260,15 +312,12 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 		s.snapshot.Fills = fills
 		s.mu.Unlock()
 	}
-	if len(tickers) == 0 {
-		return
-	}
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		subscription, err := s.exchange.Subscribe(ctx, tickers)
+		subscription, err := s.exchange.SubscribeAccount(ctx)
 		if err != nil {
 			s.setExchangeHealth("disconnected", 0)
 			select {
@@ -303,8 +352,148 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 			}
 		}
 		_ = subscription.Close()
-		s.books.MarkAllStale()
 		s.setExchangeHealth("reconnecting", 0)
+	}
+}
+
+func (s *Service) setAvailableBooks(tickers []string) {
+	available := make(map[string]bool, len(tickers))
+	for _, ticker := range tickers {
+		available[ticker] = true
+	}
+	s.mu.Lock()
+	s.availableBooks = available
+	active := s.activeBook
+	s.mu.Unlock()
+	if active != "" && !available[active] {
+		s.queueBook("")
+	}
+}
+
+func eventTickers(events []domain.CanonicalEvent) []string {
+	set := map[string]bool{}
+	for _, event := range events {
+		for _, market := range event.Markets {
+			for _, quote := range []*domain.PriceQuote{market.Away, market.Home, market.Over, market.Under} {
+				if quote != nil && quote.Ticker != "" {
+					set[quote.Ticker] = true
+				}
+			}
+		}
+	}
+	tickers := make([]string, 0, len(set))
+	for ticker := range set {
+		tickers = append(tickers, ticker)
+	}
+	sort.Strings(tickers)
+	return tickers
+}
+
+func (s *Service) seedSimulatedBook(ticker string) {
+	s.mu.Lock()
+	s.activeBook = ticker
+	var quote *domain.PriceQuote
+	for _, event := range s.snapshot.Events {
+		for _, market := range event.Markets {
+			for _, candidate := range []*domain.PriceQuote{market.Away, market.Home, market.Over, market.Under} {
+				if candidate != nil && candidate.Ticker == ticker {
+					quote = candidate
+					break
+				}
+			}
+		}
+	}
+	s.mu.Unlock()
+	if quote == nil {
+		return
+	}
+	book := domain.OrderBook{Ticker: ticker, Sequence: 1}
+	for step := domain.Money(1); step <= 5; step++ {
+		bid := quote.RawPrice - step*100
+		ask := quote.RawPrice + step*100
+		if bid > 0 {
+			book.Yes = append(book.Yes, domain.BookLevel{Price: bid, Quantity: (80 + step*55) * domain.Dollar})
+		}
+		if ask < domain.Dollar {
+			book.No = append(book.No, domain.BookLevel{Price: ask, Quantity: (95 + step*47) * domain.Dollar})
+		}
+	}
+	s.books.Snapshot(book)
+	s.broadcast(domain.StreamEvent{Type: "orderbook", Data: book})
+}
+
+func (s *Service) bookManager(ctx context.Context) {
+	var cancel context.CancelFunc
+	for {
+		select {
+		case <-ctx.Done():
+			if cancel != nil {
+				cancel()
+			}
+			return
+		case ticker := <-s.bookRequests:
+			if cancel != nil {
+				cancel()
+			}
+			s.mu.Lock()
+			previous := s.activeBook
+			s.activeBook = ticker
+			s.mu.Unlock()
+			if previous != "" {
+				if book, ok := s.books.MarkStale(previous); ok {
+					s.broadcast(domain.StreamEvent{Type: "book_stale", Data: book})
+				}
+			}
+			if ticker != "" && s.exchange != nil {
+				var child context.Context
+				child, cancel = context.WithCancel(ctx)
+				go s.bookLoop(child, ticker)
+			} else {
+				cancel = nil
+			}
+		}
+	}
+}
+
+func (s *Service) bookLoop(ctx context.Context, ticker string) {
+	backoff := time.Second
+	for ctx.Err() == nil {
+		subscription, err := s.exchange.SubscribeBooks(ctx, []string{ticker})
+		if err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+			continue
+		}
+		backoff = time.Second
+		ended := false
+		for !ended {
+			select {
+			case <-ctx.Done():
+				_ = subscription.Close()
+				return
+			case event, ok := <-subscription.Events:
+				if !ok {
+					ended = true
+					break
+				}
+				s.handleExchangeEvent(event)
+			case err := <-subscription.Errors:
+				if err != nil {
+					slog.Warn("order-book stream", "ticker", ticker, "error", err)
+				}
+				ended = true
+			}
+		}
+		_ = subscription.Close()
+		if book, ok := s.books.MarkStale(ticker); ok {
+			s.broadcast(domain.StreamEvent{Type: "book_stale", Data: book})
+		}
 	}
 }
 
@@ -414,31 +603,34 @@ func (s *Service) attachMatched(markets []domain.CanonicalMarket) []string {
 			views = append(views, moneyline)
 		}
 
-		if spread := closestMarket(matches, domain.MarketSpread); spread != nil {
-			participant := mapping.ParticipantIndex(*event, spread.Outcome+" "+spread.Subtitle)
-			yesQuote, noQuote := quoteForMarket(*spread, true), quoteForMarket(*spread, false)
-			if participant >= 0 && yesQuote != nil && noQuote != nil {
-				view := domain.MarketView{Type: domain.MarketSpread, Status: "open"}
-				line := strings.TrimPrefix(spread.Line, "+")
-				if participant == 0 {
-					view.Away, view.Home, view.Line = yesQuote, noQuote, "+"+line
-				} else {
-					view.Away, view.Home, view.Line = noQuote, yesQuote, "-"+line
-				}
-				view.Away.Outcome = event.Participants[0].Name
-				view.Home.Outcome = event.Participants[1].Name
-				views = append(views, view)
-				selectedTickers[spread.ExchangeTicker] = true
+		spreadMarkets := closestMarkets(matches, domain.MarketSpread, 5)
+		spreadOptions := make([]domain.MarketOption, 0, len(spreadMarkets))
+		for _, market := range spreadMarkets {
+			if option := spreadOption(*event, market); option != nil {
+				spreadOptions = append(spreadOptions, *option)
+				selectedTickers[market.ExchangeTicker] = true
 			}
 		}
+		if len(spreadOptions) > 0 {
+			primary := spreadOptions[0]
+			sortedOptions := append([]domain.MarketOption(nil), spreadOptions...)
+			sortMarketOptions(sortedOptions)
+			views = append(views, domain.MarketView{Type: domain.MarketSpread, Line: primary.Line, Away: primary.Away, Home: primary.Home, Options: sortedOptions, Status: "open"})
+		}
 
-		if total := closestMarket(matches, domain.MarketTotal); total != nil {
-			over, under := quoteForMarket(*total, true), quoteForMarket(*total, false)
-			if over != nil && under != nil {
-				over.Outcome, under.Outcome = "Over", "Under"
-				views = append(views, domain.MarketView{Type: domain.MarketTotal, Line: total.Line, Over: over, Under: under, Status: "open"})
-				selectedTickers[total.ExchangeTicker] = true
+		totalMarkets := closestMarkets(matches, domain.MarketTotal, 5)
+		totalOptions := make([]domain.MarketOption, 0, len(totalMarkets))
+		for _, market := range totalMarkets {
+			if option := totalOption(market); option != nil {
+				totalOptions = append(totalOptions, *option)
+				selectedTickers[market.ExchangeTicker] = true
 			}
+		}
+		if len(totalOptions) > 0 {
+			primary := totalOptions[0]
+			sortedOptions := append([]domain.MarketOption(nil), totalOptions...)
+			sortMarketOptions(sortedOptions)
+			views = append(views, domain.MarketView{Type: domain.MarketTotal, Line: primary.Line, Over: primary.Over, Under: primary.Under, Options: sortedOptions, Status: "open"})
 		}
 		event.Markets = views
 	}
@@ -467,29 +659,67 @@ func quoteForMarket(market domain.CanonicalMarket, yes bool) *domain.PriceQuote 
 	return &quote
 }
 
-func closestMarket(markets []domain.CanonicalMarket, marketType domain.MarketType) *domain.CanonicalMarket {
-	bestIndex, bestDistance := -1, int64(domain.Dollar)
+func closestMarkets(markets []domain.CanonicalMarket, marketType domain.MarketType, limit int) []domain.CanonicalMarket {
+	candidates := make([]domain.CanonicalMarket, 0)
 	for i := range markets {
-		market := &markets[i]
+		market := markets[i]
 		if market.Type != marketType || market.Line == "" || market.YesAsk <= 0 || market.YesAsk >= domain.Dollar {
 			continue
 		}
-		mid := int64(market.YesAsk)
-		if market.YesBid > 0 {
-			mid = (int64(market.YesBid) + int64(market.YesAsk)) / 2
-		}
-		distance := mid - int64(domain.Dollar/2)
-		if distance < 0 {
-			distance = -distance
-		}
-		if bestIndex < 0 || distance < bestDistance {
-			bestIndex, bestDistance = i, distance
-		}
+		candidates = append(candidates, market)
 	}
-	if bestIndex < 0 {
+	sort.SliceStable(candidates, func(i, j int) bool { return marketDistance(candidates[i]) < marketDistance(candidates[j]) })
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	return candidates
+}
+
+func marketDistance(market domain.CanonicalMarket) int64 {
+	mid := int64(market.YesAsk)
+	if market.YesBid > 0 {
+		mid = (int64(market.YesBid) + int64(market.YesAsk)) / 2
+	}
+	distance := mid - int64(domain.Dollar/2)
+	if distance < 0 {
+		return -distance
+	}
+	return distance
+}
+
+func spreadOption(event domain.CanonicalEvent, market domain.CanonicalMarket) *domain.MarketOption {
+	participant := mapping.ParticipantIndex(event, market.Outcome+" "+market.Subtitle)
+	yesQuote, noQuote := quoteForMarket(market, true), quoteForMarket(market, false)
+	if participant < 0 || yesQuote == nil || noQuote == nil {
 		return nil
 	}
-	return &markets[bestIndex]
+	option := &domain.MarketOption{}
+	line := strings.TrimPrefix(market.Line, "+")
+	if participant == 0 {
+		option.Away, option.Home, option.Line = yesQuote, noQuote, "+"+line
+	} else {
+		option.Away, option.Home, option.Line = noQuote, yesQuote, "-"+line
+	}
+	option.Away.Outcome = event.Participants[0].Name
+	option.Home.Outcome = event.Participants[1].Name
+	return option
+}
+
+func totalOption(market domain.CanonicalMarket) *domain.MarketOption {
+	over, under := quoteForMarket(market, true), quoteForMarket(market, false)
+	if over == nil || under == nil {
+		return nil
+	}
+	over.Outcome, under.Outcome = "Over", "Under"
+	return &domain.MarketOption{Line: market.Line, Over: over, Under: under}
+}
+
+func sortMarketOptions(options []domain.MarketOption) {
+	sort.SliceStable(options, func(i, j int) bool {
+		left, _ := strconv.ParseFloat(options[i].Line, 64)
+		right, _ := strconv.ParseFloat(options[j].Line, 64)
+		return left < right
+	})
 }
 
 func (s *Service) setExchangeHealth(state string, latency int64) {

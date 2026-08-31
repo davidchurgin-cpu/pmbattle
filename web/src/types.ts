@@ -2,7 +2,8 @@ export type Money = number
 
 export interface Participant { id: string; rotation: string; name: string; abbreviation: string }
 export interface PriceQuote { exchange: string; ticker: string; outcome: string; rawPrice: Money; makerFee: Money; takerFee: Money; allInCost: Money; rawMoneyline: number; allInMoneyline: number; availableQuantity: Money }
-export interface MarketView { type: 'moneyline' | 'spread' | 'total'; line?: string; away?: PriceQuote; home?: PriceQuote; over?: PriceQuote; under?: PriceQuote; status: string }
+export interface MarketOption { line: string; away?: PriceQuote; home?: PriceQuote; over?: PriceQuote; under?: PriceQuote }
+export interface MarketView { type: 'moneyline' | 'spread' | 'total'; line?: string; away?: PriceQuote; home?: PriceQuote; over?: PriceQuote; under?: PriceQuote; options?: MarketOption[]; status: string }
 export interface Event { id: string; sport: string; league: string; startTime: string; status: string; participants: Participant[]; markets?: MarketView[] }
 export interface Health { status: string; mode: string; scheduleUpdated: string; exchangeState: string; latencyMs: number; tradingEnabled: boolean }
 export interface Order { id: string; exchange: string; ticker: string; rotation?: string; market: string; status: string; quantity: Money; filledQuantity: Money; limitPrice: Money; cashRisk: Money; createdAt: string }

@@ -8,20 +8,21 @@ Milestone 1—the read-only terminal foundation—is implemented. The repository
 
 - `main.go` loads configuration, opens SQLite, starts the application service, embeds the frontend, and shuts down gracefully.
 - `internal/schedule` downloads and normalizes the sportsbook XML feed.
-- `internal/kalshi` implements environment selection, RSA-PSS authentication, market discovery, and WebSocket subscription.
+- `internal/kalshi` implements environment selection, RSA-PSS authentication, market discovery, and separate account/order-book WebSocket subscriptions.
 - `internal/mapping` conservatively matches exchange markets to canonical schedule events.
 - `internal/pricing` calculates current Kalshi maker/taker fees and fee-adjusted American moneylines using fixed-point money.
 - `internal/live` maintains sequence-checked in-memory order books.
 - `internal/storage` owns SQLite WAL tables for events, mappings, settings, and audit history.
 - `internal/app` coordinates polling, mapping, reconciliation, streaming, and the browser snapshot.
 - `internal/server` exposes read-only JSON and WebSocket endpoints and serves the embedded app.
-- `web/src/App.svelte` contains the lightweight sportsbook board, instant search, filters, book panel, and bottom activity tray.
+- `web/src/App.svelte` contains the lightweight sportsbook board, instant search, filters, click-to-expand inline book ladder, and bottom activity tray.
 
 ## Browser API
 
 - `GET /api/health` — service and feed state
 - `GET /api/snapshot` — events, account state, bankroll, and health
-- `GET /api/books/{ticker}` — current in-memory order book
+- `GET /api/books/{ticker}` — request the one active order book; returns `202` while its first live snapshot is opening
+- `DELETE /api/books/{ticker}` — release the active book when the game dropdown closes
 - `GET /api/settings` — available sports, event counts, and saved preferences
 - `PUT /api/settings` — save enabled sports and refresh the schedule and exchange subscriptions
 - `GET /api/ws` — compact live events: `schedule`, `health`, `ticker`, `orderbook`, `book_stale`, `fill`, `order`, `position`, and `market_lifecycle`
@@ -36,15 +37,16 @@ There are intentionally no mutation or trading endpoints in Milestone 1.
 - Start with Kalshi demo. Confirm the health indicator and market mappings before considering production data.
 - The Kalshi adapter requests only enabled schedule leagues and main `GAME`, `SPREAD`, and `TOTAL` event series. Multileg and prop catalogs are outside the main board path.
 - The market matcher uses Kalshi's authoritative two-team event title plus occurrence time. Both participants must match; ambiguous duplicate matchups remain `review` and are hidden.
-- Main spread and total lines are selected from the active strike closest to a 50% midpoint, then displayed as both binary sides using fee-adjusted American odds.
-- Kalshi sequence numbers are subscription-wide, not ticker-wide. A subscription gap forces reconnect and marks all cached books stale until new snapshots arrive.
+- Main spread and total lines are selected from the active strike closest to a 50% midpoint. Up to five nearby strikes are retained for the inline line selector.
+- Clicking a game expands its order book in place. Only the selected ticker receives a book subscription; selecting another ticker cancels the old stream, and closing the dropdown releases it. The authenticated account stream remains independent and continuously connected.
+- Kalshi sequence numbers are subscription-wide, not ticker-wide. A book-stream gap forces that selected ticker to reconnect and remain stale until a new snapshot arrives.
 - Sports preferences are stored in SQLite. No saved preference means all sports; saving an empty selection intentionally loads no sports.
 - Extra/added games are identified by an exactly six-digit numeric schedule event ID. The Settings tab can exclude them before market matching and subscription.
 - Simulated events include selectable moneyline, spread, and total quotes. Six-digit added games use lower simulated available quantities.
 
 ## Known limitations
 
-- Kalshi live order authentication and book streaming have been validated read-only against a production account. Position/fill historical REST reconciliation remains the next account-data task.
+- Kalshi live order authentication and on-demand book streaming have been validated read-only against a production account. Validation mapped 2,240 contracts into 441 selectable game/strike books; a requested book moved from `202` to a synchronized live ladder, switching tickers opened only the replacement stream, and release returned `204`. Position/fill historical REST reconciliation remains the next account-data task.
 - Initial league-to-series routing covers the major US leagues plus selected top soccer leagues. Add aliases as new schedule leagues are enabled; unknown leagues intentionally load no Kalshi series.
 - The current general Kalshi fee rule is versioned in one module, but market-specific fee exceptions must be added before any production order preview.
 - The UI is intentionally read-only and contains no order form.
