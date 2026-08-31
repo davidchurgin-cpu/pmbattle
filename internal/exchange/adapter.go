@@ -14,7 +14,7 @@ type Subscription struct {
 
 type Adapter interface {
 	Name() string
-	ListMarkets(context.Context) ([]domain.CanonicalMarket, error)
+	ListMarkets(context.Context, []domain.CanonicalEvent) ([]domain.CanonicalMarket, error)
 	Subscribe(context.Context, []string) (*Subscription, error)
 	Snapshot(context.Context) ([]domain.Order, []domain.Position, []domain.Fill, error)
 }

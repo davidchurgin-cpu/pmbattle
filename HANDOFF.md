@@ -34,16 +34,18 @@ There are intentionally no mutation or trading endpoints in Milestone 1.
 - Use a dedicated server directory for `pmbattle.db` and back it up normally.
 - Use the server's secret/environment manager for the Kalshi key ID and PEM path.
 - Start with Kalshi demo. Confirm the health indicator and market mappings before considering production data.
-- The current market matcher requires at least three meaningful team-name token matches. Anything below that remains `review` and is excluded from the main board.
-- If a book delta sequence skips, the book becomes stale and the UI displays the warning. A fresh snapshot is required before it is considered synchronized.
+- The Kalshi adapter requests only enabled schedule leagues and main `GAME`, `SPREAD`, and `TOTAL` event series. Multileg and prop catalogs are outside the main board path.
+- The market matcher uses Kalshi's authoritative two-team event title plus occurrence time. Both participants must match; ambiguous duplicate matchups remain `review` and are hidden.
+- Main spread and total lines are selected from the active strike closest to a 50% midpoint, then displayed as both binary sides using fee-adjusted American odds.
+- Kalshi sequence numbers are subscription-wide, not ticker-wide. A subscription gap forces reconnect and marks all cached books stale until new snapshots arrive.
 - Sports preferences are stored in SQLite. No saved preference means all sports; saving an empty selection intentionally loads no sports.
 - Extra/added games are identified by an exactly six-digit numeric schedule event ID. The Settings tab can exclude them before market matching and subscription.
 - Simulated events include selectable moneyline, spread, and total quotes. Six-digit added games use lower simulated available quantities.
 
 ## Known limitations
 
-- Kalshi live fill/order/position payloads are normalized into PMBattle records, but they still need validation against credentials from the intended account. Historical REST reconciliation is the next account-data task.
-- Market classification currently promotes the highest-confidence accepted Kalshi match as a moneyline view. Spread/total classification is the next mapping improvement.
+- Kalshi live order authentication and book streaming have been validated read-only against a production account. Position/fill historical REST reconciliation remains the next account-data task.
+- Initial league-to-series routing covers the major US leagues plus selected top soccer leagues. Add aliases as new schedule leagues are enabled; unknown leagues intentionally load no Kalshi series.
 - The current general Kalshi fee rule is versioned in one module, but market-specific fee exceptions must be added before any production order preview.
 - The UI is intentionally read-only and contains no order form.
 - The schedule feed is HTTP. Deploy through the office server and monitor its freshness; do not infer a game state when the feed is unavailable.

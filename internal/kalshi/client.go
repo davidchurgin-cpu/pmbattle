@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -56,29 +57,56 @@ func New(cfg Config) (*Client, error) {
 
 func (c *Client) Name() string { return "kalshi" }
 
-type marketResponse struct {
-	Markets []market `json:"markets"`
-	Cursor  string   `json:"cursor"`
+type eventResponse struct {
+	Events []event `json:"events"`
+	Cursor string  `json:"cursor"`
+}
+type event struct {
+	Ticker       string   `json:"event_ticker"`
+	SeriesTicker string   `json:"series_ticker"`
+	Title        string   `json:"title"`
+	Subtitle     string   `json:"sub_title"`
+	Category     string   `json:"category"`
+	Markets      []market `json:"markets"`
 }
 type market struct {
 	Ticker      string    `json:"ticker"`
 	EventTicker string    `json:"event_ticker"`
+	Status      string    `json:"status"`
 	Title       string    `json:"title"`
 	Subtitle    string    `json:"subtitle"`
 	YesSubTitle string    `json:"yes_sub_title"`
 	NoSubTitle  string    `json:"no_sub_title"`
 	CloseTime   time.Time `json:"close_time"`
+	Occurrence  time.Time `json:"occurrence_datetime"`
 	YesBid      string    `json:"yes_bid_dollars"`
 	YesAsk      string    `json:"yes_ask_dollars"`
 	YesBidSize  string    `json:"yes_bid_size_fp"`
 	YesAskSize  string    `json:"yes_ask_size_fp"`
+	FloorStrike *float64  `json:"floor_strike"`
 }
 
-func (c *Client) ListMarkets(ctx context.Context) ([]domain.CanonicalMarket, error) {
+func (c *Client) ListMarkets(ctx context.Context, scheduleEvents []domain.CanonicalEvent) ([]domain.CanonicalMarket, error) {
+	var result []domain.CanonicalMarket
+	for _, series := range sportsbookSeries(scheduleEvents) {
+		markets, err := c.listSeriesMarkets(ctx, series)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, markets...)
+	}
+	return result, nil
+}
+
+func (c *Client) listSeriesMarkets(ctx context.Context, series string) ([]domain.CanonicalMarket, error) {
+	marketType := seriesMarketType(series)
+	if marketType == "" {
+		return nil, nil
+	}
 	var result []domain.CanonicalMarket
 	cursor := ""
 	for page := 0; page < 20; page++ {
-		endpoint := c.baseURL + "/markets?status=open&limit=1000"
+		endpoint := c.baseURL + "/events?series_ticker=" + url.QueryEscape(series) + "&status=open&with_nested_markets=true&limit=200"
 		if cursor != "" {
 			endpoint += "&cursor=" + url.QueryEscape(cursor)
 		}
@@ -89,20 +117,24 @@ func (c *Client) ListMarkets(ctx context.Context) ([]domain.CanonicalMarket, err
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			return nil, fmt.Errorf("kalshi markets: %s", resp.Status)
+			return nil, fmt.Errorf("kalshi events %s: %s", series, resp.Status)
 		}
-		var payload marketResponse
+		var payload eventResponse
 		err = json.NewDecoder(resp.Body).Decode(&payload)
 		resp.Body.Close()
 		if err != nil {
 			return nil, err
 		}
-		for _, m := range payload.Markets {
-			bid, _ := fixed.Parse(m.YesBid)
-			ask, _ := fixed.Parse(m.YesAsk)
-			bidSize, _ := fixed.Parse(m.YesBidSize)
-			askSize, _ := fixed.Parse(m.YesAskSize)
-			result = append(result, domain.CanonicalMarket{ID: m.Ticker, Exchange: "kalshi", ExchangeTicker: m.Ticker, Title: m.Title, Subtitle: strings.TrimSpace(m.Subtitle + " " + m.YesSubTitle + " " + m.NoSubTitle), CloseTime: m.CloseTime, YesBid: bid, YesAsk: ask, YesBidSize: bidSize, YesAskSize: askSize, MappingStatus: "review"})
+		for _, e := range payload.Events {
+			if e.Category != "" && !strings.EqualFold(e.Category, "sports") {
+				continue
+			}
+			for _, m := range e.Markets {
+				if m.Status != "" && m.Status != "open" && m.Status != "active" {
+					continue
+				}
+				result = append(result, canonicalMarket(e, m, marketType))
+			}
 		}
 		if payload.Cursor == "" {
 			break
@@ -110,6 +142,86 @@ func (c *Client) ListMarkets(ctx context.Context) ([]domain.CanonicalMarket, err
 		cursor = payload.Cursor
 	}
 	return result, nil
+}
+
+func canonicalMarket(e event, m market, marketType domain.MarketType) domain.CanonicalMarket {
+	bid, _ := fixed.Parse(m.YesBid)
+	ask, _ := fixed.Parse(m.YesAsk)
+	bidSize, _ := fixed.Parse(m.YesBidSize)
+	askSize, _ := fixed.Parse(m.YesAskSize)
+	line := ""
+	if m.FloorStrike != nil {
+		line = strconv.FormatFloat(*m.FloorStrike, 'f', -1, 64)
+	}
+	return domain.CanonicalMarket{
+		ID: m.Ticker, Exchange: "kalshi", ExchangeTicker: m.Ticker, Type: marketType,
+		Outcome: strings.TrimSpace(m.YesSubTitle), Line: line, Title: strings.TrimSpace(e.Title),
+		Subtitle:  strings.TrimSpace(e.Subtitle + " " + m.Title + " " + m.YesSubTitle),
+		CloseTime: m.CloseTime, OccurrenceTime: m.Occurrence, YesBid: bid, YesAsk: ask,
+		YesBidSize: bidSize, YesAskSize: askSize, MappingStatus: "review",
+	}
+}
+
+func seriesMarketType(series string) domain.MarketType {
+	switch {
+	case strings.HasSuffix(series, "SPREAD"):
+		return domain.MarketSpread
+	case strings.HasSuffix(series, "TOTAL"):
+		return domain.MarketTotal
+	case strings.HasSuffix(series, "GAME"):
+		return domain.MarketMoneyline
+	default:
+		return ""
+	}
+}
+
+func sportsbookSeries(events []domain.CanonicalEvent) []string {
+	bases := map[string]bool{}
+	for _, event := range events {
+		league := strings.ToUpper(strings.TrimSpace(event.League))
+		switch {
+		case league == "NFL":
+			bases["KXNFL"] = true
+		case strings.Contains(league, "COLLEGE FOOTBALL") || league == "FCS":
+			bases["KXNCAAF"] = true
+		case strings.Contains(league, "CANADIAN FOOTBALL"):
+			bases["KXCFL"] = true
+		case league == "MLB" || league == "AMERICAN LEAGUE" || league == "NATIONAL LEAGUE":
+			bases["KXMLB"] = true
+		case strings.Contains(league, "JAPAN NPB"):
+			bases["KXNPB"] = true
+		case strings.Contains(league, "KOREA KBO"):
+			bases["KXKBO"] = true
+		case league == "NBA":
+			bases["KXNBA"] = true
+		case league == "WNBA":
+			bases["KXWNBA"] = true
+		case league == "COLLEGE BASKETBALL":
+			bases["KXNCAAMB"] = true
+		case strings.Contains(league, "WOMEN'S COLLEGE BASKETBALL"):
+			bases["KXNCAAWB"] = true
+		case league == "NHL":
+			bases["KXNHL"] = true
+		case league == "ENGLAND PREMIER LEAGUE":
+			bases["KXEPL"] = true
+		case league == "SPAIN LA LIGA":
+			bases["KXLALIGA"] = true
+		case league == "GERMAN BUNDESLIGA":
+			bases["KXBUNDESLIGA"] = true
+		case league == "FRANCE LIGUE 1":
+			bases["KXLIGUE1"] = true
+		case league == "ITALY SERIE A":
+			bases["KXSERIEA"] = true
+		case league == "MAJOR LEAGUE":
+			bases["KXMLS"] = true
+		}
+	}
+	series := make([]string, 0, len(bases)*3)
+	for base := range bases {
+		series = append(series, base+"GAME", base+"SPREAD", base+"TOTAL")
+	}
+	sort.Strings(series)
+	return series
 }
 
 func (c *Client) Snapshot(ctx context.Context) ([]domain.Order, []domain.Position, []domain.Fill, error) {
@@ -142,7 +254,7 @@ func (c *Client) Subscribe(ctx context.Context, tickers []string) (*exchange.Sub
 	events := make(chan domain.StreamEvent, 256)
 	errs := make(chan error, 1)
 	channels := []string{"ticker", "orderbook_delta", "fill", "user_orders", "market_positions", "market_lifecycle_v2"}
-	params := map[string]any{"channels": channels}
+	params := map[string]any{"channels": channels, "use_yes_price": true}
 	if len(tickers) > 0 {
 		params["market_tickers"] = tickers
 	}
@@ -154,6 +266,7 @@ func (c *Client) Subscribe(ctx context.Context, tickers []string) (*exchange.Sub
 		defer close(events)
 		defer close(errs)
 		defer conn.Close()
+		lastSequence := map[int64]int64{}
 		for {
 			var msg wsMessage
 			if err := conn.ReadJSON(&msg); err != nil {
@@ -164,6 +277,16 @@ func (c *Client) Subscribe(ctx context.Context, tickers []string) (*exchange.Sub
 					}
 				}
 				return
+			}
+			if msg.SID != 0 && msg.Seq != 0 {
+				if previous := lastSequence[msg.SID]; previous != 0 && msg.Seq != previous+1 {
+					select {
+					case errs <- fmt.Errorf("kalshi websocket sequence gap on subscription %d: got %d after %d", msg.SID, msg.Seq, previous):
+					default:
+					}
+					return
+				}
+				lastSequence[msg.SID] = msg.Seq
 			}
 			translated, ok, err := translate(msg)
 			if err != nil {

@@ -49,6 +49,7 @@ type CanonicalMarket struct {
 	Title             string     `json:"title,omitempty"`
 	Subtitle          string     `json:"subtitle,omitempty"`
 	CloseTime         time.Time  `json:"closeTime,omitempty"`
+	OccurrenceTime    time.Time  `json:"occurrenceTime,omitempty"`
 	YesBid            Money      `json:"yesBid,omitempty"`
 	YesAsk            Money      `json:"yesAsk,omitempty"`
 	YesBidSize        Money      `json:"yesBidSize,omitempty"`

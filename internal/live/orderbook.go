@@ -9,7 +9,7 @@ import (
 	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
 )
 
-var ErrSequenceGap = errors.New("order book sequence gap")
+var ErrSequenceGap = errors.New("order book delta received before snapshot")
 
 type Books struct {
 	mu    sync.RWMutex
@@ -31,7 +31,7 @@ func (b *Books) Apply(delta domain.OrderBookDelta) (domain.OrderBook, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	book, ok := b.books[delta.Ticker]
-	if !ok || delta.Sequence != book.Sequence+1 {
+	if !ok {
 		book.Stale = true
 		b.books[delta.Ticker] = book
 		return book, ErrSequenceGap
@@ -59,6 +59,15 @@ func (b *Books) Apply(delta domain.OrderBookDelta) (domain.OrderBook, error) {
 	sortLevels(&book)
 	b.books[delta.Ticker] = book
 	return book, nil
+}
+
+func (b *Books) MarkAllStale() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for ticker, book := range b.books {
+		book.Stale = true
+		b.books[ticker] = book
+	}
 }
 
 func (b *Books) Get(ticker string) (domain.OrderBook, bool) {

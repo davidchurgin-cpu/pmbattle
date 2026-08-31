@@ -73,10 +73,21 @@ PMBATTLE_ENABLE_TRADING=false
 
 Demo and production credentials are different. Never commit private keys, `.env`, databases, or server secrets. Production trading remains disabled in this release even if `PMBATTLE_ENABLE_TRADING` is set.
 
+### Using another PC
+
+GitHub carries the application code, but deliberately does not carry credentials. On each PC or server:
+
+1. Copy the Kalshi key ID and PEM private key through a secure channel, not through GitHub.
+2. Store them outside the cloned PMBattle folder.
+3. Set `PMBATTLE_KALSHI_KEY_ID` and `PMBATTLE_KALSHI_PRIVATE_KEY_PATH` for that machine.
+4. Set `PMBATTLE_KALSHI_ENV=production` only for production keys; demo keys require `demo`.
+
+The same Kalshi API key can authenticate from another PC if Kalshi account policy permits it, but the local files and environment settings do not transfer automatically.
+
 ## Safety model
 
 - Uncertain market mappings are not displayed as tradable markets.
-- Missing WebSocket sequence numbers mark the affected book stale.
+- WebSocket sequence gaps are validated at Kalshi's subscription level; a gap reconnects the feed and marks cached books stale until fresh snapshots arrive.
 - The UI clearly identifies simulated/live mode and stale data.
 - Credentials never pass through the browser.
 - The server enforces same-origin browser WebSockets and basic security headers.

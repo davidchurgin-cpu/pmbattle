@@ -79,3 +79,38 @@ func TestAttachSimulatedMarketsUsesLowerAddedGameLimits(t *testing.T) {
 		t.Fatalf("expected added-game limit below regular limit, got added=%d regular=%d", added, regular)
 	}
 }
+
+func TestAttachMatchedBuildsLiveSportsbookMarkets(t *testing.T) {
+	service := &Service{snapshot: domain.Snapshot{Events: []domain.CanonicalEvent{{
+		ID: "141", Participants: []domain.Participant{{Name: "Massachusetts"}, {Name: "Rutgers"}},
+	}}}}
+	markets := []domain.CanonicalMarket{
+		{EventID: "141", MappingStatus: "accepted", Exchange: "kalshi", ExchangeTicker: "MASS-ML", Type: domain.MarketMoneyline, Outcome: "UMass", YesBid: 200, YesAsk: 300, YesBidSize: 100 * domain.Dollar, YesAskSize: 100 * domain.Dollar},
+		{EventID: "141", MappingStatus: "accepted", Exchange: "kalshi", ExchangeTicker: "RUTG-ML", Type: domain.MarketMoneyline, Outcome: "Rutgers", YesBid: 9700, YesAsk: 9800, YesBidSize: 100 * domain.Dollar, YesAskSize: 100 * domain.Dollar},
+		{EventID: "141", MappingStatus: "accepted", Exchange: "kalshi", ExchangeTicker: "RUTG-SP", Type: domain.MarketSpread, Outcome: "Rutgers wins by over 24.5 points", Line: "24.5", YesBid: 4900, YesAsk: 5100, YesBidSize: 100 * domain.Dollar, YesAskSize: 100 * domain.Dollar},
+		{EventID: "141", MappingStatus: "accepted", Exchange: "kalshi", ExchangeTicker: "GAME-TOTAL", Type: domain.MarketTotal, Outcome: "Over 52.5 points", Line: "52.5", YesBid: 4800, YesAsk: 5200, YesBidSize: 100 * domain.Dollar, YesAskSize: 100 * domain.Dollar},
+	}
+	tickers := service.attachMatched(markets)
+	views := service.snapshot.Events[0].Markets
+	if len(views) != 3 || views[0].Away == nil || views[0].Home == nil {
+		t.Fatalf("unexpected live views %+v", views)
+	}
+	if views[1].Line != "-24.5" || views[1].Away == nil || views[1].Home == nil {
+		t.Fatalf("unexpected spread %+v", views[1])
+	}
+	if views[2].Line != "52.5" || views[2].Over == nil || views[2].Under == nil {
+		t.Fatalf("unexpected total %+v", views[2])
+	}
+	if len(tickers) != 4 {
+		t.Fatalf("expected four selected tickers, got %v", tickers)
+	}
+}
+
+func TestSetEventsPreservesVerifiedLiveMarkets(t *testing.T) {
+	liveQuote := &domain.PriceQuote{Ticker: "KXNCAAFGAME-LIVE"}
+	service := &Service{snapshot: domain.Snapshot{Events: []domain.CanonicalEvent{{ID: "141", Markets: []domain.MarketView{{Type: domain.MarketMoneyline, Home: liveQuote}}}}}}
+	service.setEvents([]domain.CanonicalEvent{{ID: "141"}}, false)
+	if len(service.snapshot.Events[0].Markets) != 1 || service.snapshot.Events[0].Markets[0].Home.Ticker != "KXNCAAFGAME-LIVE" {
+		t.Fatalf("live market was not preserved: %+v", service.snapshot.Events[0].Markets)
+	}
+}
