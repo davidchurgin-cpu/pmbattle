@@ -25,30 +25,74 @@ type Config struct {
 }
 
 type Service struct {
-	mu          sync.RWMutex
-	cfg         Config
-	store       *storage.Store
-	schedule    schedule.Client
-	exchange    exchange.Adapter
-	books       *live.Books
-	snapshot    domain.Snapshot
-	subscribers map[chan domain.StreamEvent]struct{}
+	mu              sync.RWMutex
+	cfg             Config
+	store           *storage.Store
+	schedule        schedule.Client
+	exchange        exchange.Adapter
+	books           *live.Books
+	allEvents       []domain.CanonicalEvent
+	preferences     domain.Preferences
+	snapshot        domain.Snapshot
+	subscribers     map[chan domain.StreamEvent]struct{}
+	restartExchange chan struct{}
 }
 
 func New(cfg Config, store *storage.Store, adapter exchange.Adapter) *Service {
-	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{})}
+	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1)}
 	s.snapshot.Health = domain.Health{Status: "starting", Mode: map[bool]string{true: "simulated", false: "live"}[cfg.Simulated], ExchangeState: "disconnected", TradingEnabled: false}
 	return s
 }
 
 func (s *Service) Run(ctx context.Context) {
+	if value, ok, err := s.store.GetSetting(ctx, "preferences"); err == nil && ok {
+		_ = json.Unmarshal([]byte(value), &s.preferences)
+	}
 	if cached, err := s.store.LoadEvents(ctx); err == nil && len(cached) > 0 {
 		s.setEvents(cached, false)
 	}
 	s.refreshSchedule(ctx)
 	go s.scheduleLoop(ctx)
-	go s.exchangeLoop(ctx)
+	go s.exchangeManager(ctx)
 	<-ctx.Done()
+}
+
+func (s *Service) UpdatePreferences(ctx context.Context, enabled []string) (domain.Snapshot, error) {
+	clean := make([]string, 0, len(enabled))
+	seen := map[string]bool{}
+	for _, sport := range enabled {
+		sport = SportKey(sport)
+		if sport != "" && !seen[sport] {
+			seen[sport] = true
+			clean = append(clean, sport)
+		}
+	}
+	sort.Strings(clean)
+	preferences := domain.Preferences{EnabledSports: clean}
+	payload, err := json.Marshal(preferences)
+	if err != nil {
+		return domain.Snapshot{}, err
+	}
+	if err := s.store.SetSetting(ctx, "preferences", string(payload)); err != nil {
+		return domain.Snapshot{}, err
+	}
+	s.mu.Lock()
+	s.preferences = preferences
+	events := filterEvents(s.allEvents, preferences)
+	s.snapshot.Events = events
+	s.snapshot.Settings = buildSettings(s.allEvents, preferences)
+	if s.cfg.Simulated {
+		seedAccount(&s.snapshot)
+	}
+	snapshot := s.snapshot
+	s.mu.Unlock()
+	s.broadcast(domain.StreamEvent{Type: "schedule", Data: events})
+	s.broadcast(domain.StreamEvent{Type: "settings", Data: snapshot.Settings})
+	select {
+	case s.restartExchange <- struct{}{}:
+	default:
+	}
+	return s.Snapshot(), nil
 }
 
 func (s *Service) Snapshot() domain.Snapshot {
@@ -127,7 +171,9 @@ func (s *Service) setEvents(events []domain.CanonicalEvent, publish bool) {
 		return events[i].StartTime.Before(events[j].StartTime)
 	})
 	s.mu.Lock()
-	s.snapshot.Events = events
+	s.allEvents = events
+	s.snapshot.Events = filterEvents(events, s.preferences)
+	s.snapshot.Settings = buildSettings(events, s.preferences)
 	s.snapshot.Health.Status = "ok"
 	s.snapshot.Health.ScheduleUpdated = time.Now().UTC()
 	if s.cfg.Simulated {
@@ -135,7 +181,24 @@ func (s *Service) setEvents(events []domain.CanonicalEvent, publish bool) {
 	}
 	s.mu.Unlock()
 	if publish {
-		s.broadcast(domain.StreamEvent{Type: "schedule", Data: events})
+		s.broadcast(domain.StreamEvent{Type: "schedule", Data: s.Snapshot().Events})
+	}
+}
+
+func (s *Service) exchangeManager(ctx context.Context) {
+	for {
+		child, cancel := context.WithCancel(ctx)
+		done := make(chan struct{})
+		go func() { defer close(done); s.exchangeLoop(child) }()
+		select {
+		case <-ctx.Done():
+			cancel()
+			<-done
+			return
+		case <-s.restartExchange:
+			cancel()
+			<-done
+		}
 	}
 }
 
@@ -359,3 +422,42 @@ func seedAccount(snapshot *domain.Snapshot) {
 }
 
 func SportKey(value string) string { return strings.ToUpper(strings.TrimSpace(value)) }
+
+func filterEvents(events []domain.CanonicalEvent, preferences domain.Preferences) []domain.CanonicalEvent {
+	if preferences.EnabledSports == nil {
+		return append([]domain.CanonicalEvent(nil), events...)
+	}
+	enabled := map[string]bool{}
+	for _, sport := range preferences.EnabledSports {
+		enabled[SportKey(sport)] = true
+	}
+	filtered := make([]domain.CanonicalEvent, 0)
+	for _, event := range events {
+		if enabled[SportKey(event.Sport)] {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
+}
+
+func buildSettings(events []domain.CanonicalEvent, preferences domain.Preferences) domain.Settings {
+	counts := map[string]int{}
+	for _, event := range events {
+		counts[SportKey(event.Sport)]++
+	}
+	names := make([]string, 0, len(counts))
+	for name := range counts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	enabled := map[string]bool{}
+	all := preferences.EnabledSports == nil
+	for _, sport := range preferences.EnabledSports {
+		enabled[SportKey(sport)] = true
+	}
+	options := make([]domain.SportOption, 0, len(names))
+	for _, name := range names {
+		options = append(options, domain.SportOption{Name: name, EventCount: counts[name], Enabled: all || enabled[name]})
+	}
+	return domain.Settings{Preferences: preferences, AvailableSports: options}
+}

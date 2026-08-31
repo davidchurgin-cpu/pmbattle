@@ -16,6 +16,7 @@ The current release is deliberately **read-only**. It includes the live schedule
 - Live browser stream for books, health, fills, orders, and positions
 - SQLite WAL persistence for schedules, mappings, settings, and audit records
 - Standard light and dark themes
+- Persisted Settings tab for enabling only the sports you want to load and subscribe to
 - Windows, Linux, and Docker builds
 
 ## Quick start

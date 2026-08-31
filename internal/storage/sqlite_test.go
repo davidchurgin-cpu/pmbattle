@@ -27,3 +27,19 @@ func TestEventsRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected events %+v", got)
 	}
 }
+
+func TestSettingsRoundTrip(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	if err := store.SetSetting(ctx, "preferences", `{"enabledSports":["FOOTBALL"]}`); err != nil {
+		t.Fatal(err)
+	}
+	value, ok, err := store.GetSetting(ctx, "preferences")
+	if err != nil || !ok || value != `{"enabledSports":["FOOTBALL"]}` {
+		t.Fatalf("unexpected setting value=%q ok=%v err=%v", value, ok, err)
+	}
+}

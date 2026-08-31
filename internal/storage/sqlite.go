@@ -103,3 +103,20 @@ func (s *Store) SaveMapping(ctx context.Context, market domain.CanonicalMarket) 
 	_, err := s.db.ExecContext(ctx, `INSERT INTO market_mappings(exchange,ticker,event_id,confidence,status,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(exchange,ticker) DO UPDATE SET event_id=excluded.event_id,confidence=excluded.confidence,status=excluded.status,updated_at=excluded.updated_at`, market.Exchange, market.ExchangeTicker, market.EventID, market.MappingConfidence, market.MappingStatus, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
 }
+
+func (s *Store) SetSetting(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, key, value, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) GetSetting(ctx context.Context, key string) (string, bool, error) {
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key=?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}

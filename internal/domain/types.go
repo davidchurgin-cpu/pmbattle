@@ -147,6 +147,23 @@ type Health struct {
 	TradingEnabled  bool      `json:"tradingEnabled"`
 }
 
+type Preferences struct {
+	// Nil means the user has not configured this setting yet, so all sports are enabled.
+	// A non-nil empty slice intentionally disables every sport.
+	EnabledSports []string `json:"enabledSports"`
+}
+
+type SportOption struct {
+	Name       string `json:"name"`
+	EventCount int    `json:"eventCount"`
+	Enabled    bool   `json:"enabled"`
+}
+
+type Settings struct {
+	Preferences     Preferences   `json:"preferences"`
+	AvailableSports []SportOption `json:"availableSports"`
+}
+
 type Snapshot struct {
 	Events    []CanonicalEvent `json:"events"`
 	Orders    []Order          `json:"orders"`
@@ -155,6 +172,7 @@ type Snapshot struct {
 	Health    Health           `json:"health"`
 	Bankroll  Money            `json:"bankroll"`
 	AtRisk    Money            `json:"atRisk"`
+	Settings  Settings         `json:"settings"`
 }
 
 type StreamEvent struct {

@@ -27,6 +27,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/snapshot", s.snapshot)
+	mux.HandleFunc("GET /api/settings", s.settings)
+	mux.HandleFunc("PUT /api/settings", s.updateSettings)
 	mux.HandleFunc("GET /api/books/{ticker}", s.book)
 	mux.HandleFunc("GET /api/ws", s.ws)
 	if s.static != nil {
@@ -40,6 +42,25 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.service.Snapshot())
+}
+func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.service.Snapshot().Settings)
+}
+func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var input struct {
+		EnabledSports []string `json:"enabledSports"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid settings"})
+		return
+	}
+	snapshot, err := s.service.UpdatePreferences(r.Context(), input.EnabledSports)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to save settings"})
+		return
+	}
+	writeJSON(w, http.StatusOK, snapshot)
 }
 func (s *Server) book(w http.ResponseWriter, r *http.Request) {
 	book, ok := s.service.Book(r.PathValue("ticker"))

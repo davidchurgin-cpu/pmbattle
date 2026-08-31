@@ -22,6 +22,8 @@ Milestone 1—the read-only terminal foundation—is implemented. The repository
 - `GET /api/health` — service and feed state
 - `GET /api/snapshot` — events, account state, bankroll, and health
 - `GET /api/books/{ticker}` — current in-memory order book
+- `GET /api/settings` — available sports, event counts, and saved preferences
+- `PUT /api/settings` — save enabled sports and refresh the schedule and exchange subscriptions
 - `GET /api/ws` — compact live events: `schedule`, `health`, `ticker`, `orderbook`, `book_stale`, `fill`, `order`, `position`, and `market_lifecycle`
 
 There are intentionally no mutation or trading endpoints in Milestone 1.
@@ -34,6 +36,7 @@ There are intentionally no mutation or trading endpoints in Milestone 1.
 - Start with Kalshi demo. Confirm the health indicator and market mappings before considering production data.
 - The current market matcher requires at least three meaningful team-name token matches. Anything below that remains `review` and is excluded from the main board.
 - If a book delta sequence skips, the book becomes stale and the UI displays the warning. A fresh snapshot is required before it is considered synchronized.
+- Sports preferences are stored in SQLite. No saved preference means all sports; saving an empty selection intentionally loads no sports.
 
 ## Known limitations
 
