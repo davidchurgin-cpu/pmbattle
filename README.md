@@ -11,6 +11,7 @@ The current release is deliberately **read-only**. It includes the live schedule
 - Conservative Kalshi market matching with uncertain matches hidden from the board
 - Fixed-point money and fee calculations; no floating point is used for order cost or fees
 - Fee-adjusted American moneylines as the primary displayed price
+- Moneyline, spread, and total columns in the simulated sportsbook board
 - Kalshi demo/production endpoints, RSA-PSS request signing, and authenticated WebSocket connection
 - Sequence-checked in-memory order books with stale-book detection
 - Live browser stream for books, health, fills, orders, and positions

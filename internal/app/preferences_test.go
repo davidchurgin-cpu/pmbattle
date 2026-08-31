@@ -49,3 +49,33 @@ func TestBuildSettingsCountsAddedGames(t *testing.T) {
 		t.Fatalf("unexpected counts %+v", settings.AvailableSports[0])
 	}
 }
+
+func TestAttachSimulatedMarketsIncludesAllSportsbookColumns(t *testing.T) {
+	events := []domain.CanonicalEvent{{ID: "451", Participants: []domain.Participant{{Name: "Away"}, {Name: "Home"}}}}
+	attachSimulatedMarkets(events)
+	if len(events[0].Markets) != 3 {
+		t.Fatalf("expected moneyline, spread, and total markets, got %+v", events[0].Markets)
+	}
+	if events[0].Markets[0].Type != domain.MarketMoneyline || events[0].Markets[0].Away == nil || events[0].Markets[0].Home == nil {
+		t.Fatalf("invalid moneyline market %+v", events[0].Markets[0])
+	}
+	if events[0].Markets[1].Type != domain.MarketSpread || events[0].Markets[1].Line == "" || events[0].Markets[1].Away == nil || events[0].Markets[1].Home == nil {
+		t.Fatalf("invalid spread market %+v", events[0].Markets[1])
+	}
+	if events[0].Markets[2].Type != domain.MarketTotal || events[0].Markets[2].Line == "" || events[0].Markets[2].Over == nil || events[0].Markets[2].Under == nil {
+		t.Fatalf("invalid total market %+v", events[0].Markets[2])
+	}
+}
+
+func TestAttachSimulatedMarketsUsesLowerAddedGameLimits(t *testing.T) {
+	events := []domain.CanonicalEvent{
+		{ID: "451", Participants: []domain.Participant{{Name: "Away"}, {Name: "Home"}}},
+		{ID: "309007", Participants: []domain.Participant{{Name: "Away"}, {Name: "Home"}}},
+	}
+	attachSimulatedMarkets(events)
+	regular := events[0].Markets[0].Away.AvailableQuantity
+	added := events[1].Markets[0].Away.AvailableQuantity
+	if added >= regular {
+		t.Fatalf("expected added-game limit below regular limit, got added=%d regular=%d", added, regular)
+	}
+}

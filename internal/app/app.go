@@ -388,21 +388,49 @@ func firstRotation(event domain.CanonicalEvent) string {
 }
 
 func attachSimulatedMarkets(events []domain.CanonicalEvent) {
+	spreadLines := []string{"-1.5", "-2.5", "-3.5", "-5.5", "-6.5", "+1.5", "+2.5", "+3.5"}
+	totalLines := []string{"41.5", "42.5", "44.5", "46.5", "48.5", "51.5", "54.5"}
 	for i := range events {
 		if len(events[i].Participants) < 2 {
 			continue
 		}
-		base := domain.Money(4400 + ((i * 137) % 1200))
-		away, _ := pricing.Quote(base, domain.Money(1800*domain.Dollar), false)
-		home, _ := pricing.Quote(domain.Dollar-base, domain.Money(2200*domain.Dollar), false)
-		away.Exchange = "Kalshi"
-		away.Ticker = "SIM-" + events[i].ID + "-A"
-		away.Outcome = events[i].Participants[0].Name
-		home.Exchange = "Kalshi"
-		home.Ticker = "SIM-" + events[i].ID + "-H"
-		home.Outcome = events[i].Participants[1].Name
-		events[i].Markets = []domain.MarketView{{Type: domain.MarketMoneyline, Away: &away, Home: &home, Status: "open"}}
+		awayName := events[i].Participants[0].Name
+		homeName := events[i].Participants[1].Name
+		prefix := "SIM-" + events[i].ID
+		limitScale := domain.Money(1)
+		if isAddedGame(events[i]) {
+			limitScale = 5
+		}
+
+		moneylinePrice := domain.Money(4400 + ((i * 137) % 1200))
+		awayMoneyline := simulatedQuote(moneylinePrice, 1800*domain.Dollar/limitScale, prefix+"-ML-A", awayName)
+		homeMoneyline := simulatedQuote(domain.Dollar-moneylinePrice, 2200*domain.Dollar/limitScale, prefix+"-ML-H", homeName)
+
+		spreadPrice := domain.Money(4700 + ((i * 83) % 700))
+		awaySpread := simulatedQuote(spreadPrice, 1400*domain.Dollar/limitScale, prefix+"-SP-A", awayName)
+		homeSpread := simulatedQuote(domain.Dollar-spreadPrice, 1600*domain.Dollar/limitScale, prefix+"-SP-H", homeName)
+
+		totalPrice := domain.Money(4700 + ((i * 61) % 700))
+		over := simulatedQuote(totalPrice, 1200*domain.Dollar/limitScale, prefix+"-TO-O", "Over")
+		under := simulatedQuote(domain.Dollar-totalPrice, 1500*domain.Dollar/limitScale, prefix+"-TO-U", "Under")
+
+		events[i].Markets = []domain.MarketView{
+			{Type: domain.MarketMoneyline, Away: awayMoneyline, Home: homeMoneyline, Status: "open"},
+			{Type: domain.MarketSpread, Line: spreadLines[i%len(spreadLines)], Away: awaySpread, Home: homeSpread, Status: "open"},
+			{Type: domain.MarketTotal, Line: totalLines[i%len(totalLines)], Over: over, Under: under, Status: "open"},
+		}
 	}
+}
+
+func simulatedQuote(price, quantity domain.Money, ticker, outcome string) *domain.PriceQuote {
+	quote, err := pricing.Quote(price, quantity, false)
+	if err != nil {
+		return nil
+	}
+	quote.Exchange = "Kalshi"
+	quote.Ticker = ticker
+	quote.Outcome = outcome
+	return &quote
 }
 
 func seedAccount(snapshot *domain.Snapshot) {

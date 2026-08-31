@@ -38,6 +38,7 @@ There are intentionally no mutation or trading endpoints in Milestone 1.
 - If a book delta sequence skips, the book becomes stale and the UI displays the warning. A fresh snapshot is required before it is considered synchronized.
 - Sports preferences are stored in SQLite. No saved preference means all sports; saving an empty selection intentionally loads no sports.
 - Extra/added games are identified by an exactly six-digit numeric schedule event ID. The Settings tab can exclude them before market matching and subscription.
+- Simulated events include selectable moneyline, spread, and total quotes. Six-digit added games use lower simulated available quantities.
 
 ## Known limitations
 

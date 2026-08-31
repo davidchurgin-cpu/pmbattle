@@ -25,6 +25,10 @@
   const dateKey = (value: string) => new Date(value).toISOString().slice(0, 10)
   const time = (value: string) => new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
   const day = (value: string) => new Date(value).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+  const spread = (line: string | undefined, away: boolean) => {
+    const value = Number(line || 0) * (away ? -1 : 1)
+    return value > 0 ? `+${value}` : `${value}`
+  }
 
   $: sports = ['ALL', ...new Set(snapshot.events.map(event => event.sport.toUpperCase()))]
   $: leagues = ['ALL', ...new Set(snapshot.events.filter(event => selectedSport === 'ALL' || event.sport.toUpperCase() === selectedSport).map(event => event.league.toUpperCase()))]
@@ -98,12 +102,15 @@
     <main class="board">
       <div class="board-head"><span>Game</span><span>Team</span><span>Moneyline</span><span>Spread</span><span>Total</span><span>Time</span></div>
       {#each filtered as event (event.id)}
-        {@const market = event.markets?.[0]}
+        {@const moneyline = event.markets?.find(market => market.type === 'moneyline')}
+        {@const spreadMarket = event.markets?.find(market => market.type === 'spread')}
+        {@const total = event.markets?.find(market => market.type === 'total')}
         <section class="game" class:selected={selectedEvent?.id === event.id}>
           <div class="rotations">{#each event.participants as participant}<b>{participant.rotation}</b>{/each}</div>
           <div class="teams">{#each event.participants as participant}<div><strong>{participant.name}</strong><small>{participant.abbreviation}</small></div>{/each}</div>
-          <div class="market">{#if market}{#each [market.away, market.home] as quote}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click={() => select(event, quote)}><b>{ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
-          <div class="market muted"><span>—</span><span>—</span></div><div class="market muted"><span>—</span><span>—</span></div>
+          <div class="market">{#if moneyline}{#each [moneyline.away, moneyline.home] as quote}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click={() => select(event, quote)}><b>{ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
+          <div class="market">{#if spreadMarket}{#each [spreadMarket.away, spreadMarket.home] as quote, index}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click={() => select(event, quote)}><b>{spread(spreadMarket.line, index === 0)} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
+          <div class="market">{#if total}{#each [total.over, total.under] as quote, index}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click={() => select(event, quote)}><b>{index === 0 ? 'O' : 'U'} {total.line} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
           <div class="start"><b>{day(event.startTime)}</b><span>{time(event.startTime)}</span></div>
         </section>
       {:else}<div class="empty">No matching games</div>{/each}
