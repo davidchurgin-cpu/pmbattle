@@ -1,0 +1,57 @@
+.ladder-row {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ladder-row:hover { background: var(--accent-soft); }
+.ladder-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.order-slip {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 30;
+  width: min(360px, calc(100vw - 20px));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  box-shadow: 0 12px 38px rgb(0 0 0 / 24%);
+}
+
+.order-slip header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border-bottom: 1px solid var(--line); }
+.order-slip header small, .order-slip header b { display: block; }
+.order-slip header small { color: var(--muted); font-size: 8px; letter-spacing: .06em; }
+.order-slip header b { margin-top: 2px; font-size: 12px; }
+.order-slip header button { border: 0; background: transparent; color: var(--muted); font-size: 20px; cursor: pointer; }
+
+.slip-price { display: grid; grid-template-columns: 1fr auto; align-items: center; padding: 10px 12px; background: var(--panel-2); }
+.slip-price > span { font-size: 11px; font-weight: 600; }
+.slip-price > b { font-size: 15px; }
+.slip-price b i { color: var(--accent); font-style: normal; }
+.slip-price small { grid-column: 2; color: var(--muted); font-size: 8px; text-align: right; }
+
+.slip-strategies { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 8px 10px 0; }
+.slip-strategies button { padding: 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--input); color: var(--text); font-size: 10px; cursor: pointer; }
+.slip-strategies button.active { border-color: var(--accent); background: var(--accent-soft); }
+
+.slip-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; }
+.slip-fields label > span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; }
+.slip-fields input, .slip-fields select { width: 100%; height: 31px; padding: 5px 7px; border: 1px solid var(--line); border-radius: 4px; background: var(--input); color: var(--text); font-variant-numeric: tabular-nums; }
+.slip-fields label > div { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 4px; background: var(--input); }
+.slip-fields label > div i { padding-left: 7px; color: var(--muted); font-style: normal; }
+.slip-fields label > div input { border: 0; }
+
+.slip-summary { display: flex; justify-content: space-between; gap: 8px; padding: 0 11px 9px; color: var(--muted); font-size: 9px; }
+.slip-summary b { color: var(--text); }
+.submit-order { width: calc(100% - 20px); margin: 0 10px 10px; padding: 9px; border: 0; border-radius: 4px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 600; cursor: pointer; }
+.submit-order:disabled { background: var(--panel-2); color: var(--muted); cursor: not-allowed; }
+.slip-status { margin: 0; padding: 0 11px 10px; color: var(--muted); font-size: 9px; }
+
+@media (max-width: 560px) {
+  .order-slip { right: 5px; bottom: 5px; width: calc(100vw - 10px); }
+}

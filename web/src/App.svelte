@@ -16,6 +16,15 @@
   let selectedMarket: MarketView | null = null
   let expandedEventID = ''
   let bookSide: 'yes' | 'no' = 'yes'
+  let slipOpen = false
+  let slipIntent: 'cross' | 'join' = 'cross'
+  let slipPrice = 0
+  let slipRisk = '100'
+  let slipCap = ''
+  let slipStrategy: 'basic' | 'iceberg' | 'follow' = 'basic'
+  let slipPolicy: 'limit' | 'post_only' | 'ioc' = 'limit'
+  let slipSlice = '25'
+  let slipStatus = ''
   let book: OrderBook | null = null
   let trayOpen = true
   let trayTab: 'orders' | 'positions' | 'fills' | 'history' = 'fills'
@@ -25,6 +34,7 @@
   const money = (value: number) => `$${(value / 10000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const qty = (value: number) => (value / 10000).toLocaleString(undefined, { maximumFractionDigits: 2 })
   const ml = (value?: number) => value === undefined ? '—' : value > 0 ? `+${value}` : `${value}`
+  const rawML = (price: number) => Math.round(price < 5000 ? 100 * (10000 - price) / price : -100 * price / (10000 - price))
   const dateKey = (value: string) => new Date(value).toISOString().slice(0, 10)
   const time = (value: string) => new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
   const day = (value: string) => new Date(value).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
@@ -41,8 +51,18 @@
     const moneyline = effective === 5000 ? 100 : effective < 5000 ? Math.round(100 * (10000 - effective) / effective) : -Math.round(100 * effective / (10000 - effective))
     return { fee: Number(fee), cost: Number(cost), moneyline }
   }
-  const levelPrice = (level: BookLevel) => `${ml(Math.round(level.price < 5000 ? 100 * (10000 - level.price) / level.price : -100 * level.price / (10000 - level.price)))} → ${ml(takerQuote(level).moneyline)}`
+  const levelPrice = (level: BookLevel) => `${ml(rawML(level.price))} → ${ml(takerQuote(level).moneyline)}`
   const marketLabel = (market: MarketView | null) => market?.type === 'spread' ? 'Spread' : market?.type === 'total' ? 'Total' : 'Moneyline'
+  const invertLevel = (level: BookLevel): BookLevel => ({ price: 10000 - level.price, quantity: level.quantity })
+  $: displayAsks = !book ? [] : bookSide === 'yes' ? book.no.slice(0, 6) : book.yes.slice(0, 6).map(invertLevel)
+  $: displayBids = !book ? [] : bookSide === 'yes' ? book.yes.slice(0, 6) : book.no.slice(0, 6).map(invertLevel)
+  $: slipQuantity = slipPrice > 0 ? Math.max(10000, Math.floor((Number(slipRisk) || 0) * 100000000 / slipPrice)) : 10000
+  $: slipQuote = slipPrice > 0 ? takerQuote({ price: slipPrice, quantity: slipQuantity }) : null
+
+  function normalizeSnapshot(value: Snapshot): Snapshot {
+    return { ...value, events: value.events || [], orders: value.orders || [], positions: value.positions || [], fills: value.fills || [], settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
+  }
+  function normalizeBook(value: OrderBook): OrderBook { return { ...value, yes: value.yes || [], no: value.no || [] } }
 
   $: sports = ['ALL', ...new Set(snapshot.events.map(event => event.sport.toUpperCase()))]
   $: leagues = ['ALL', ...new Set(snapshot.events.filter(event => selectedSport === 'ALL' || event.sport.toUpperCase() === selectedSport).map(event => event.league.toUpperCase()))]
@@ -59,13 +79,13 @@
     try {
       const response = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabledSports: draftSports, excludeAddedGames: draftExcludeAddedGames }) })
       if (!response.ok) throw new Error('Unable to save sports preferences')
-      snapshot = await response.json(); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); selectedSport = 'ALL'; selectedLeague = 'ALL'; selectedDate = 'ALL'; settingsStatus = 'Saved'
+      snapshot = normalizeSnapshot(await response.json()); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); selectedSport = 'ALL'; selectedLeague = 'ALL'; selectedDate = 'ALL'; settingsStatus = 'Saved'
     } catch (cause) { settingsStatus = cause instanceof Error ? cause.message : 'Unable to save settings' }
   }
   async function select(event: Event, quote?: PriceQuote, market?: MarketView) {
     if (!quote) return
     selectedEvent = event; selectedQuote = quote; selectedMarket = market || event.markets?.find(value => [value.away, value.home, value.over, value.under].some(valueQuote => valueQuote?.ticker === quote.ticker)) || null; expandedEventID = event.id; book = null
-    try { const response = await fetch(`/api/books/${encodeURIComponent(quote.ticker)}`); if (response.ok) book = await response.json() } catch { /* the live snapshot will arrive over the browser stream */ }
+    try { const response = await fetch(`/api/books/${encodeURIComponent(quote.ticker)}`); if (response.ok) book = normalizeBook(await response.json()) } catch { /* the live snapshot will arrive over the browser stream */ }
   }
   function toggleGame(event: Event) {
     if (expandedEventID === event.id) { if (selectedQuote) fetch(`/api/books/${encodeURIComponent(selectedQuote.ticker)}`, { method: 'DELETE' }).catch(() => {}); expandedEventID = ''; selectedEvent = null; selectedQuote = null; selectedMarket = null; book = null; return }
@@ -80,12 +100,30 @@
     const market: MarketView = { ...selectedMarket, line: option.line, away: option.away, home: option.home, over: option.over, under: option.under }
     select(selectedEvent, quote, market)
   }
+  function chooseBookPrice(level: BookLevel, intent: 'cross' | 'join') {
+    slipPrice = level.price
+    slipIntent = intent
+    slipPolicy = intent === 'cross' ? 'limit' : 'post_only'
+    slipCap = `${takerQuote(level).moneyline}`
+    slipStatus = ''
+    slipOpen = true
+  }
+  async function submitOrder() {
+    if (!snapshot.health.tradingEnabled) { slipStatus = 'Demo order entry is locked on this server.'; return }
+    slipStatus = 'Submitting…'
+    try {
+      const response = await fetch('/api/parent-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId: selectedEvent?.id, rotation: selectedEvent?.participants.find(participant => participant.name === selectedQuote?.outcome)?.rotation || '', ticker: selectedQuote?.ticker, outcome: selectedQuote?.outcome, market: marketLabel(selectedMarket), side: bookSide, strategy: slipStrategy, policy: slipPolicy, cashRisk: Math.round((Number(slipRisk) || 0) * 10000), priceCapMoneyline: Number(slipCap), limitPrice: slipPrice, sliceQuantity: Math.round((Number(slipSlice) || 0) * 10000) }) })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || 'Order was rejected')
+      slipStatus = `Parent order ${payload.id} created`
+    } catch (cause) { slipStatus = cause instanceof Error ? cause.message : 'Unable to submit order' }
+  }
   function applyStream(message: { type: string; data: unknown }) {
-    if (message.type === 'schedule') snapshot = { ...snapshot, events: message.data as Event[] }
+    if (message.type === 'schedule') snapshot = { ...snapshot, events: (message.data as Event[]) || [] }
     if (message.type === 'health') snapshot = { ...snapshot, health: message.data as Health }
     if (message.type === 'settings') { snapshot = { ...snapshot, settings: message.data as Settings }; draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames }
-    if (message.type === 'orderbook') { const next = message.data as OrderBook; if (next.ticker === selectedQuote?.ticker) book = next }
-    if (message.type === 'book_stale') { const next = message.data as OrderBook; if (next.ticker === selectedQuote?.ticker) book = { ...next, stale: true } }
+    if (message.type === 'orderbook') { const next = normalizeBook(message.data as OrderBook); if (next.ticker === selectedQuote?.ticker) book = next }
+    if (message.type === 'book_stale') { const next = normalizeBook(message.data as OrderBook); if (next.ticker === selectedQuote?.ticker) book = { ...next, stale: true } }
     if (message.type === 'fill') { const next = message.data as Fill; snapshot = { ...snapshot, fills: [next, ...snapshot.fills].slice(0, 250) } }
     if (message.type === 'order') { const next = message.data as Order; snapshot = { ...snapshot, orders: [next, ...snapshot.orders.filter(order => order.id !== next.id)] } }
     if (message.type === 'position') { const next = message.data as Position; snapshot = { ...snapshot, positions: [next, ...snapshot.positions.filter(position => position.ticker !== next.ticker)] } }
@@ -98,7 +136,7 @@
   }
   onMount(async () => {
     document.documentElement.dataset.theme = theme
-    try { const response = await fetch('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = await response.json(); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
+    try { const response = await fetch('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = normalizeSnapshot(await response.json()); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
   })
   $: document.documentElement.dataset.theme = theme
 </script>
@@ -153,18 +191,18 @@
               <div class="top-quote"><b>{ml(selectedQuote.allInMoneyline)}</b><small>fee included</small></div>
               <div class="book-state" class:stale={!book || book.stale}><i></i>{!book ? 'CONNECTING' : book.stale ? 'STALE' : 'LIVE'}</div>
             </header>
-            <nav class="trade-tabs"><button class:active={bookSide === 'yes'} on:click={() => bookSide = 'yes'}>Trade Yes</button><button class:active={bookSide === 'no'} on:click={() => bookSide = 'no'}>Trade No</button><span>READ-ONLY</span></nav>
+            <nav class="trade-tabs"><button class:active={bookSide === 'yes'} on:click={() => bookSide = 'yes'}>Trade Yes</button><button class:active={bookSide === 'no'} on:click={() => bookSide = 'no'}>Trade No</button><span>{snapshot.health.tradingEnabled ? 'DEMO ORDERS' : 'READ-ONLY'}</span></nav>
             <div class="ladder-head"><span></span><span>Price <small>raw → fee included</small></span><span>Contracts</span><span>Total</span></div>
-            {#if book && (book.no.length || book.yes.length)}
+            {#if book && (displayAsks.length || displayBids.length)}
               <div class="ladder asks">
-                {#each [...book.no.slice(0, 6)].reverse() as level}
-                  <div class="ladder-row" style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...book.no.map(value => Number(value.quantity))) * 100)}%`}><b>ASK</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></div>
+                {#each [...displayAsks].reverse() as level}
+                  <button class="ladder-row" title="Use this ask in the order slip" on:click={() => chooseBookPrice(level, 'cross')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayAsks.map(value => Number(value.quantity))) * 100)}%`}><b>ASK</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></button>
                 {/each}
               </div>
               <div class="book-center"><b>Trade {bookSide === 'yes' ? 'Yes' : 'No'}</b><span>{selectedQuote.outcome}</span></div>
               <div class="ladder bids">
-                {#each book.yes.slice(0, 6) as level}
-                  <div class="ladder-row" style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...book.yes.map(value => Number(value.quantity))) * 100)}%`}><b>BID</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></div>
+                {#each displayBids as level}
+                  <button class="ladder-row" title="Join this bid in the order slip" on:click={() => chooseBookPrice(level, 'join')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayBids.map(value => Number(value.quantity))) * 100)}%`}><b>BID</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></button>
                 {/each}
               </div>
             {:else}
@@ -211,5 +249,21 @@
         <div class="settings-footer"><span aria-live="polite">{settingsStatus}</span><button class="save-settings" on:click={savePreferences}>Save preferences</button></div>
       </section>
     </main>
+  {/if}
+  {#if slipOpen && selectedQuote && selectedEvent}
+    <aside class="order-slip" aria-label="Order slip">
+      <header><div><small>ORDER SLIP · KALSHI</small><b>{selectedQuote.outcome} {selectedMarket?.line || ''}</b></div><button aria-label="Close order slip" on:click={() => slipOpen = false}>×</button></header>
+      <div class="slip-price"><span>{slipIntent === 'cross' ? `Buy ${bookSide.toUpperCase()}` : `Join ${bookSide.toUpperCase()} bid`}</span><b>{ml(rawML(slipPrice))} <i>→ {ml(slipQuote?.moneyline)}</i></b><small>raw → fee included</small></div>
+      <div class="slip-strategies"><button class:active={slipStrategy === 'basic'} on:click={() => slipStrategy = 'basic'}>Basic</button><button class:active={slipStrategy === 'iceberg'} on:click={() => slipStrategy = 'iceberg'}>Iceberg</button><button class:active={slipStrategy === 'follow'} on:click={() => { slipStrategy = 'follow'; slipPolicy = 'post_only' }}>Follow</button></div>
+      <div class="slip-fields">
+        <label><span>Cash at risk</span><div><i>$</i><input type="number" min="1" step="1" bind:value={slipRisk} /></div></label>
+        <label><span>Worst all-in price</span><input type="number" step="1" bind:value={slipCap} /></label>
+        <label><span>Order behavior</span><select bind:value={slipPolicy} disabled={slipStrategy === 'follow'}><option value="limit">Limit</option><option value="post_only">Post only</option><option value="ioc">Immediate or cancel</option></select></label>
+        {#if slipStrategy === 'iceberg'}<label><span>Visible contracts</span><input type="number" min="1" step="1" bind:value={slipSlice} /></label>{/if}
+      </div>
+      <div class="slip-summary"><span>Estimated contracts <b>{qty(slipQuantity)}</b></span><span>Fee-adjusted cap <b>{ml(Number(slipCap))}</b></span></div>
+      <button class="submit-order" disabled={!snapshot.health.tradingEnabled || !slipPrice || Number(slipRisk) <= 0} on:click={submitOrder}>{snapshot.health.tradingEnabled ? 'Place demo order' : 'Demo trading locked'}</button>
+      {#if slipStatus}<p class="slip-status" aria-live="polite">{slipStatus}</p>{/if}
+    </aside>
   {/if}
 </div>

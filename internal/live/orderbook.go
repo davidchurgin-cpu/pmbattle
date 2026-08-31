@@ -61,15 +61,6 @@ func (b *Books) Apply(delta domain.OrderBookDelta) (domain.OrderBook, error) {
 	return book, nil
 }
 
-func (b *Books) MarkAllStale() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for ticker, book := range b.books {
-		book.Stale = true
-		b.books[ticker] = book
-	}
-}
-
 func (b *Books) MarkStale(ticker string) (domain.OrderBook, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

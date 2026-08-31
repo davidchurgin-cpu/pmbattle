@@ -15,6 +15,7 @@ The current release is deliberately **read-only**. It includes the live schedule
 - Kalshi demo/production endpoints, RSA-PSS request signing, and authenticated WebSocket connection
 - Click-to-expand, full-depth inline order-book ladders with bids, asks, contracts, cash totals, and raw-to-fee-included moneylines
 - On-demand order-book subscriptions: PMBattle loads only the selected market, releases it when closed, and never streams every game unnecessarily
+- Clickable Yes/No bid and ask levels that populate a floating bottom order slip with the exact price, cash-at-risk field, fee-adjusted cap, and basic/iceberg/follow controls
 - Sequence-checked in-memory order books with stale-book detection
 - Live browser stream for books, health, fills, orders, and positions
 - SQLite WAL persistence for schedules, mappings, settings, and audit records
@@ -95,6 +96,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - Credentials never pass through the browser.
 - The server enforces same-origin browser WebSockets and basic security headers.
 - No trading endpoint exists yet.
+- The floating order slip is a reviewed interface preview only; its submit button remains locked until the guarded demo parent-order engine is implemented.
 
 See [HANDOFF.md](HANDOFF.md) for architecture, operational details, known limitations, and the next implementation milestone.
 
