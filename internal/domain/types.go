@@ -1,0 +1,171 @@
+package domain
+
+import "time"
+
+type Money int64 // fixed-point ten-thousandths of a dollar
+
+const Dollar Money = 10_000
+
+type Participant struct {
+	ID           string `json:"id"`
+	Rotation     string `json:"rotation"`
+	Name         string `json:"name"`
+	Abbreviation string `json:"abbreviation"`
+}
+
+type CanonicalEvent struct {
+	ID           string        `json:"id"`
+	SportID      string        `json:"sportId"`
+	Sport        string        `json:"sport"`
+	LeagueID     string        `json:"leagueId"`
+	League       string        `json:"league"`
+	StartTime    time.Time     `json:"startTime"`
+	Status       string        `json:"status"`
+	Period       string        `json:"period,omitempty"`
+	Timer        string        `json:"timer,omitempty"`
+	IsFinal      bool          `json:"isFinal"`
+	AwayScore    string        `json:"awayScore,omitempty"`
+	HomeScore    string        `json:"homeScore,omitempty"`
+	Participants []Participant `json:"participants"`
+	Markets      []MarketView  `json:"markets,omitempty"`
+}
+
+type MarketType string
+
+const (
+	MarketMoneyline MarketType = "moneyline"
+	MarketSpread    MarketType = "spread"
+	MarketTotal     MarketType = "total"
+)
+
+type CanonicalMarket struct {
+	ID                string     `json:"id"`
+	EventID           string     `json:"eventId"`
+	Exchange          string     `json:"exchange"`
+	ExchangeTicker    string     `json:"exchangeTicker"`
+	Type              MarketType `json:"type"`
+	Outcome           string     `json:"outcome"`
+	Line              string     `json:"line,omitempty"`
+	Title             string     `json:"title,omitempty"`
+	Subtitle          string     `json:"subtitle,omitempty"`
+	CloseTime         time.Time  `json:"closeTime,omitempty"`
+	YesBid            Money      `json:"yesBid,omitempty"`
+	YesAsk            Money      `json:"yesAsk,omitempty"`
+	YesBidSize        Money      `json:"yesBidSize,omitempty"`
+	YesAskSize        Money      `json:"yesAskSize,omitempty"`
+	MappingConfidence int        `json:"mappingConfidence"`
+	MappingStatus     string     `json:"mappingStatus"`
+}
+
+type PriceQuote struct {
+	Exchange          string `json:"exchange"`
+	Ticker            string `json:"ticker"`
+	Outcome           string `json:"outcome"`
+	RawPrice          Money  `json:"rawPrice"`
+	MakerFee          Money  `json:"makerFee"`
+	TakerFee          Money  `json:"takerFee"`
+	AllInCost         Money  `json:"allInCost"`
+	RawMoneyline      int64  `json:"rawMoneyline"`
+	AllInMoneyline    int64  `json:"allInMoneyline"`
+	AvailableQuantity Money  `json:"availableQuantity"`
+}
+
+type MarketView struct {
+	Type   MarketType  `json:"type"`
+	Line   string      `json:"line,omitempty"`
+	Away   *PriceQuote `json:"away,omitempty"`
+	Home   *PriceQuote `json:"home,omitempty"`
+	Over   *PriceQuote `json:"over,omitempty"`
+	Under  *PriceQuote `json:"under,omitempty"`
+	Status string      `json:"status"`
+}
+
+type BookLevel struct {
+	Price    Money `json:"price"`
+	Quantity Money `json:"quantity"`
+}
+
+type OrderBook struct {
+	Ticker    string      `json:"ticker"`
+	Sequence  int64       `json:"sequence"`
+	UpdatedAt time.Time   `json:"updatedAt"`
+	Stale     bool        `json:"stale"`
+	Yes       []BookLevel `json:"yes"`
+	No        []BookLevel `json:"no"`
+}
+
+type Fill struct {
+	ID             string    `json:"id"`
+	Exchange       string    `json:"exchange"`
+	Ticker         string    `json:"ticker"`
+	EventID        string    `json:"eventId,omitempty"`
+	Rotation       string    `json:"rotation,omitempty"`
+	Team           string    `json:"team,omitempty"`
+	Market         string    `json:"market"`
+	Side           string    `json:"side"`
+	Quantity       Money     `json:"quantity"`
+	RawPrice       Money     `json:"rawPrice"`
+	AllInMoneyline int64     `json:"allInMoneyline"`
+	Fee            Money     `json:"fee"`
+	CashRisk       Money     `json:"cashRisk"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+type Order struct {
+	ID             string    `json:"id"`
+	Exchange       string    `json:"exchange"`
+	Ticker         string    `json:"ticker"`
+	Rotation       string    `json:"rotation,omitempty"`
+	Market         string    `json:"market"`
+	Side           string    `json:"side"`
+	Status         string    `json:"status"`
+	Quantity       Money     `json:"quantity"`
+	FilledQuantity Money     `json:"filledQuantity"`
+	LimitPrice     Money     `json:"limitPrice"`
+	CashRisk       Money     `json:"cashRisk"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+type Position struct {
+	Exchange      string `json:"exchange"`
+	Ticker        string `json:"ticker"`
+	Rotation      string `json:"rotation,omitempty"`
+	Market        string `json:"market"`
+	Quantity      Money  `json:"quantity"`
+	CashRisk      Money  `json:"cashRisk"`
+	AveragePrice  Money  `json:"averagePrice"`
+	CurrentPrice  Money  `json:"currentPrice"`
+	UnrealizedPnL Money  `json:"unrealizedPnl"`
+}
+
+type Health struct {
+	Status          string    `json:"status"`
+	Mode            string    `json:"mode"`
+	ScheduleUpdated time.Time `json:"scheduleUpdated"`
+	ExchangeState   string    `json:"exchangeState"`
+	LatencyMS       int64     `json:"latencyMs"`
+	TradingEnabled  bool      `json:"tradingEnabled"`
+}
+
+type Snapshot struct {
+	Events    []CanonicalEvent `json:"events"`
+	Orders    []Order          `json:"orders"`
+	Positions []Position       `json:"positions"`
+	Fills     []Fill           `json:"fills"`
+	Health    Health           `json:"health"`
+	Bankroll  Money            `json:"bankroll"`
+	AtRisk    Money            `json:"atRisk"`
+}
+
+type StreamEvent struct {
+	Type string `json:"type"`
+	Data any    `json:"data"`
+}
+
+type OrderBookDelta struct {
+	Ticker   string `json:"ticker"`
+	Sequence int64  `json:"sequence"`
+	Side     string `json:"side"`
+	Price    Money  `json:"price"`
+	Delta    Money  `json:"delta"`
+}

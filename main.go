@@ -1,0 +1,69 @@
+package main
+
+import (
+	"context"
+	"embed"
+	"errors"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/davidchurgin-cpu/pmbattle/internal/app"
+	"github.com/davidchurgin-cpu/pmbattle/internal/kalshi"
+	"github.com/davidchurgin-cpu/pmbattle/internal/server"
+	"github.com/davidchurgin-cpu/pmbattle/internal/storage"
+)
+
+//go:embed web/dist/*
+var webAssets embed.FS
+
+func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	dbPath := env("PMBATTLE_DB", "pmbattle.db")
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		slog.Error("open database", "error", err)
+		os.Exit(1)
+	}
+	defer store.Close()
+	interval, err := time.ParseDuration(env("PMBATTLE_SCHEDULE_INTERVAL", "30s"))
+	if err != nil {
+		interval = 30 * time.Second
+	}
+	simulated := strings.EqualFold(env("PMBATTLE_SIMULATED", "true"), "true")
+	kalshiClient, err := kalshi.New(kalshi.Config{Environment: env("PMBATTLE_KALSHI_ENV", "demo"), KeyID: os.Getenv("PMBATTLE_KALSHI_KEY_ID"), PrivateKeyPath: os.Getenv("PMBATTLE_KALSHI_PRIVATE_KEY_PATH")})
+	if err != nil {
+		slog.Error("configure Kalshi", "error", err)
+		os.Exit(1)
+	}
+	service := app.New(app.Config{ScheduleURL: env("PMBATTLE_SCHEDULE_URL", "http://linefeednew.spankodds.com/supportSystem/rawschedule_v2_expanded.xml"), ScheduleInterval: interval, Simulated: simulated}, store, kalshiClient)
+	static, _ := fs.Sub(webAssets, "web/dist")
+	httpServer := &http.Server{Addr: env("PMBATTLE_ADDR", ":8080"), Handler: server.New(service, static).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	go service.Run(ctx)
+	go func() {
+		slog.Info("PMBattle listening", "address", httpServer.Addr, "simulated", simulated)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server stopped", "error", err)
+			stop()
+		}
+	}()
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_ = httpServer.Shutdown(shutdownCtx)
+}
+
+func env(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		return value
+	}
+	return fallback
+}

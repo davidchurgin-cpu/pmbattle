@@ -1,0 +1,11 @@
+.env
+pmbattle.db
+pmbattle.db-shm
+pmbattle.db-wal
+web/node_modules/
+dist/
+!web/dist/
+!web/dist/**
+.cache/
+*.exe
+
