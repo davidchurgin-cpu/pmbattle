@@ -2,7 +2,7 @@
 
 PMBattle is a fast, lightweight sportsbook-style terminal for prediction markets. It uses rotation numbers and the supplied sportsbook schedule as its event directory, then maps prediction-market contracts onto those games.
 
-The current release is deliberately **read-only**. It includes the live schedule, Kalshi market discovery and WebSocket plumbing, fee-adjusted American moneylines, live order books, fills, positions, orders, instant search, sport/date/league filters, and a compact light/dark interface. Real-money order entry is disabled.
+The production connection is deliberately **read-only**. The terminal includes the live schedule, Kalshi market discovery and WebSocket plumbing, fee-adjusted American moneylines, live order books, fills, positions, orders, instant search, sport/date/league filters, and a compact light/dark interface. A disabled-by-default basic order path exists only for authenticated Kalshi demo testing; real-money order entry is blocked in both startup configuration and the exchange client.
 
 ## What works now
 
@@ -16,6 +16,8 @@ The current release is deliberately **read-only**. It includes the live schedule
 - Click-to-expand, full-depth inline order-book ladders with bids, asks, contracts, cash totals, and raw-to-fee-included moneylines
 - On-demand order-book subscriptions: PMBattle loads only the selected market, releases it when closed, and never streams every game unnecessarily
 - Clickable Yes/No bid and ask levels that populate a floating bottom order slip with the exact price, cash-at-risk field, fee-adjusted cap, and basic/iceberg/follow controls
+- Demo-only basic limit, post-only, IOC, and cancel commands sized from a parent cash-risk target with a hard fee-adjusted moneyline cap
+- Current Kalshi V2 fixed-point order requests, including correct NO-to-YES-book conversion and idempotent client order IDs
 - Always-visible dashboard order monitor with working quantities and recent fills, plus immediate visual alerts for every newly streamed full or partial fill
 - Explicit, accessible side identities across the board, book, and slip: Away blue, Home purple, Over green, and Under amber
 - Sequence-checked in-memory order books with stale-book detection
@@ -73,10 +75,10 @@ PMBATTLE_KALSHI_ENV=demo
 PMBATTLE_KALSHI_KEY_ID=your-key-id
 PMBATTLE_KALSHI_PRIVATE_KEY_PATH=/secure/path/kalshi-private-key.pem
 PMBATTLE_SIMULATED=false
-PMBATTLE_ENABLE_TRADING=false
+PMBATTLE_TRADING_ENABLED=false
 ```
 
-Demo and production credentials are different. Never commit private keys, `.env`, databases, or server secrets. Production trading remains disabled in this release even if `PMBATTLE_ENABLE_TRADING` is set.
+Demo and production credentials are different. Never commit private keys, `.env`, databases, or server secrets. `PMBATTLE_TRADING_ENABLED` defaults to `false`; if it is set to `true` outside authenticated, non-simulated Kalshi demo mode, PMBattle refuses to start. The Kalshi adapter independently rejects place and cancel mutations unless its configured environment is `demo`.
 
 ### Using another PC
 
@@ -98,8 +100,8 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - The UI clearly identifies simulated/live mode and stale data.
 - Credentials never pass through the browser.
 - The server enforces same-origin browser WebSockets and basic security headers.
-- No trading endpoint exists yet.
-- The floating order slip is a reviewed interface preview only; its submit button remains locked until the guarded demo parent-order engine is implemented.
+- The production API and exchange adapter cannot place, modify, or cancel orders. No real-money action should be enabled without a separate reviewed implementation and the user's explicit permission.
+- Demo order submission remains off unless `PMBATTLE_TRADING_ENABLED=true` is deliberately supplied with demo credentials. The engine rejects stale books, unknown mappings, invalid sides, requests above $20,000 cash risk, unsupported strategies, and prices beyond the fee-adjusted cap.
 
 See [HANDOFF.md](HANDOFF.md) for architecture, operational details, known limitations, and the next implementation milestone.
 

@@ -39,12 +39,19 @@ func main() {
 		interval = 30 * time.Second
 	}
 	simulated := strings.EqualFold(env("PMBATTLE_SIMULATED", "true"), "true")
-	kalshiClient, err := kalshi.New(kalshi.Config{Environment: env("PMBATTLE_KALSHI_ENV", "demo"), KeyID: os.Getenv("PMBATTLE_KALSHI_KEY_ID"), PrivateKeyPath: os.Getenv("PMBATTLE_KALSHI_PRIVATE_KEY_PATH")})
+	kalshiEnvironment := env("PMBATTLE_KALSHI_ENV", "demo")
+	tradingRequested := strings.EqualFold(env("PMBATTLE_TRADING_ENABLED", "false"), "true")
+	if tradingRequested && (simulated || !strings.EqualFold(kalshiEnvironment, "demo")) {
+		slog.Error("refusing to enable order entry outside authenticated Kalshi demo mode")
+		os.Exit(1)
+	}
+	demoTrading := tradingRequested && !simulated && strings.EqualFold(kalshiEnvironment, "demo")
+	kalshiClient, err := kalshi.New(kalshi.Config{Environment: kalshiEnvironment, KeyID: os.Getenv("PMBATTLE_KALSHI_KEY_ID"), PrivateKeyPath: os.Getenv("PMBATTLE_KALSHI_PRIVATE_KEY_PATH")})
 	if err != nil {
 		slog.Error("configure Kalshi", "error", err)
 		os.Exit(1)
 	}
-	service := app.New(app.Config{ScheduleURL: env("PMBATTLE_SCHEDULE_URL", "http://linefeednew.spankodds.com/supportSystem/rawschedule_v2_expanded.xml"), ScheduleInterval: interval, Simulated: simulated}, store, kalshiClient)
+	service := app.New(app.Config{ScheduleURL: env("PMBATTLE_SCHEDULE_URL", "http://linefeednew.spankodds.com/supportSystem/rawschedule_v2_expanded.xml"), ScheduleInterval: interval, ExchangeEnvironment: kalshiEnvironment, Simulated: simulated, DemoTrading: demoTrading}, store, kalshiClient)
 	static, _ := fs.Sub(webAssets, "web/dist")
 	httpServer := &http.Server{Addr: env("PMBATTLE_ADDR", ":8080"), Handler: server.New(service, static).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go service.Run(ctx)

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -14,15 +15,18 @@ import (
 	"github.com/davidchurgin-cpu/pmbattle/internal/exchange"
 	"github.com/davidchurgin-cpu/pmbattle/internal/live"
 	"github.com/davidchurgin-cpu/pmbattle/internal/mapping"
+	orderengine "github.com/davidchurgin-cpu/pmbattle/internal/orders"
 	"github.com/davidchurgin-cpu/pmbattle/internal/pricing"
 	"github.com/davidchurgin-cpu/pmbattle/internal/schedule"
 	"github.com/davidchurgin-cpu/pmbattle/internal/storage"
 )
 
 type Config struct {
-	ScheduleURL      string
-	ScheduleInterval time.Duration
-	Simulated        bool
+	ScheduleURL         string
+	ScheduleInterval    time.Duration
+	ExchangeEnvironment string
+	Simulated           bool
+	DemoTrading         bool
 }
 
 type Service struct {
@@ -31,6 +35,7 @@ type Service struct {
 	store           *storage.Store
 	schedule        schedule.Client
 	exchange        exchange.Adapter
+	orderEngine     *orderengine.Engine
 	books           *live.Books
 	allEvents       []domain.CanonicalEvent
 	preferences     domain.Preferences
@@ -43,8 +48,15 @@ type Service struct {
 }
 
 func New(cfg Config, store *storage.Store, adapter exchange.Adapter) *Service {
-	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1), bookRequests: make(chan string, 1), availableBooks: make(map[string]bool)}
-	s.snapshot.Health = domain.Health{Status: "starting", Mode: map[bool]string{true: "simulated", false: "live"}[cfg.Simulated], ExchangeState: "disconnected", TradingEnabled: false}
+	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, orderEngine: orderengine.New(cfg.DemoTrading, adapter), books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1), bookRequests: make(chan string, 1), availableBooks: make(map[string]bool)}
+	mode := "live"
+	if cfg.Simulated {
+		mode = "simulated"
+	} else if strings.EqualFold(cfg.ExchangeEnvironment, "demo") {
+		mode = "demo"
+	}
+	s.snapshot.Health = domain.Health{Status: "starting", Mode: mode, ExchangeState: "disconnected", TradingEnabled: cfg.DemoTrading}
+	s.snapshot.ParentOrders = make([]domain.ParentOrder, 0)
 	return s
 }
 
@@ -110,6 +122,147 @@ func (s *Service) Snapshot() domain.Snapshot {
 }
 
 func (s *Service) Book(ticker string) (domain.OrderBook, bool) { return s.books.Get(ticker) }
+
+type CreateParentOrderInput struct {
+	EventID           string
+	Ticker            string
+	Rotation          string
+	Outcome           string
+	Market            string
+	Side              string
+	Strategy          string
+	Policy            string
+	CashRisk          domain.Money
+	PriceCapMoneyline int64
+	LimitPrice        domain.Money
+	SliceQuantity     domain.Money
+}
+
+func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrderInput) (domain.ParentOrder, error) {
+	s.mu.RLock()
+	tradingEnabled := s.snapshot.Health.TradingEnabled
+	available := s.availableBooks[input.Ticker]
+	event, quote, marketLabel, rotation, found := s.resolveOrderSelection(input.EventID, input.Ticker, input.Side)
+	s.mu.RUnlock()
+	if !tradingEnabled {
+		return domain.ParentOrder{}, orderengine.ErrDisabled
+	}
+	if !available || !found {
+		return domain.ParentOrder{}, orderengine.ErrInvalidOrder
+	}
+	book, ok := s.books.Get(input.Ticker)
+	if !ok || book.Stale {
+		return domain.ParentOrder{}, errors.New("order book is not synchronized")
+	}
+	request := orderengine.CreateRequest{
+		EventID: event.ID, Ticker: input.Ticker, Rotation: rotation, Outcome: quote.Outcome,
+		Market: marketLabel, Side: input.Side, Strategy: input.Strategy, Policy: input.Policy,
+		CashRisk: input.CashRisk, PriceCapMoneyline: input.PriceCapMoneyline, LimitPrice: input.LimitPrice,
+		SliceQuantity: input.SliceQuantity,
+	}
+	_ = s.store.Audit(ctx, "parent_order_request", request)
+	parent, child, err := s.orderEngine.Create(ctx, request)
+	if err != nil {
+		_ = s.store.Audit(ctx, "parent_order_rejected", map[string]any{"request": request, "error": err.Error()})
+		return domain.ParentOrder{}, err
+	}
+	child.Rotation = parent.Rotation
+	child.Market = parent.Market
+	s.mu.Lock()
+	s.snapshot.ParentOrders = append([]domain.ParentOrder{parent}, s.snapshot.ParentOrders...)
+	s.upsertOrderLocked(child)
+	s.recalculateParentRiskLocked()
+	s.mu.Unlock()
+	_ = s.store.Audit(ctx, "parent_order_acknowledged", map[string]any{"parent": parent, "child": child})
+	s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
+	s.broadcast(domain.StreamEvent{Type: "order", Data: child})
+	return parent, nil
+}
+
+func (s *Service) CancelParentOrder(ctx context.Context, id string) (domain.ParentOrder, error) {
+	if !s.Snapshot().Health.TradingEnabled {
+		return domain.ParentOrder{}, orderengine.ErrDisabled
+	}
+	parent, err := s.orderEngine.Cancel(ctx, id)
+	if err != nil {
+		_ = s.store.Audit(ctx, "parent_order_cancel_failed", map[string]any{"id": id, "error": err.Error()})
+		return domain.ParentOrder{}, err
+	}
+	s.mu.Lock()
+	updatedChildren := make([]domain.Order, 0, len(parent.ChildOrderIDs))
+	for i := range s.snapshot.ParentOrders {
+		if s.snapshot.ParentOrders[i].ID == parent.ID {
+			s.snapshot.ParentOrders[i] = parent
+		}
+	}
+	for i := range s.snapshot.Orders {
+		for _, childID := range parent.ChildOrderIDs {
+			if s.snapshot.Orders[i].ID == childID {
+				s.snapshot.Orders[i].Status = "canceled"
+				s.snapshot.Orders[i].CashRisk = 0
+				updatedChildren = append(updatedChildren, s.snapshot.Orders[i])
+			}
+		}
+	}
+	s.recalculateParentRiskLocked()
+	s.mu.Unlock()
+	_ = s.store.Audit(ctx, "parent_order_canceled", parent)
+	s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
+	for _, child := range updatedChildren {
+		s.broadcast(domain.StreamEvent{Type: "order", Data: child})
+	}
+	return parent, nil
+}
+
+func (s *Service) resolveOrderSelection(eventID, ticker, side string) (domain.CanonicalEvent, domain.PriceQuote, string, string, bool) {
+	for _, event := range s.snapshot.Events {
+		if event.ID != eventID {
+			continue
+		}
+		for _, market := range event.Markets {
+			quotes := []*domain.PriceQuote{market.Away, market.Home, market.Over, market.Under}
+			for _, option := range market.Options {
+				quotes = append(quotes, option.Away, option.Home, option.Over, option.Under)
+			}
+			for _, quote := range quotes {
+				if quote == nil || quote.Ticker != ticker || quote.Side != side {
+					continue
+				}
+				rotation := ""
+				for _, participant := range event.Participants {
+					if participant.Name == quote.Outcome {
+						rotation = participant.Rotation
+					}
+				}
+				label := string(market.Type)
+				if market.Line != "" {
+					label += " " + market.Line
+				}
+				return event, *quote, label, rotation, true
+			}
+		}
+	}
+	return domain.CanonicalEvent{}, domain.PriceQuote{}, "", "", false
+}
+
+func (s *Service) upsertOrderLocked(order domain.Order) {
+	for i := range s.snapshot.Orders {
+		if s.snapshot.Orders[i].ID == order.ID {
+			s.snapshot.Orders[i] = order
+			return
+		}
+	}
+	s.snapshot.Orders = append([]domain.Order{order}, s.snapshot.Orders...)
+}
+
+func (s *Service) recalculateParentRiskLocked() {
+	s.snapshot.AtRisk = 0
+	for _, parent := range s.snapshot.ParentOrders {
+		if parent.Status != "canceled" && parent.Status != "filled" && parent.Status != "rejected" {
+			s.snapshot.AtRisk += parent.ReservedRisk
+		}
+	}
+}
 
 // RequestBook switches the one live order-book subscription to ticker. Only
 // tickers produced by accepted schedule mappings may be requested.

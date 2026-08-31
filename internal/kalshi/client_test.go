@@ -1,11 +1,17 @@
 package kalshi
 
 import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
+	"github.com/davidchurgin-cpu/pmbattle/internal/exchange"
 )
 
 func TestTranslateFill(t *testing.T) {
@@ -43,5 +49,45 @@ func TestNormalizeOrderUsesCurrentFixedPointFields(t *testing.T) {
 	}
 	if order.CashRisk <= 0 || !order.CreatedAt.Equal(created) {
 		t.Fatalf("expected risk and timestamp, got %+v", order)
+	}
+}
+
+func TestPlaceNoOrderUsesV2AskOnYesBook(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/portfolio/events/orders" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["side"] != "ask" || body["price"] != "0.4400" || body["count"] != "10.0000" || body["time_in_force"] != "good_till_canceled" {
+			t.Fatalf("unexpected V2 body %#v", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"order":{"order_id":"order-1","ticker":"TEST","status":"resting","side":"no","no_price_dollars":"0.5600","initial_count_fp":"10.0000","remaining_count_fp":"10.0000"}}`))
+	}))
+	defer server.Close()
+	client := &Client{cfg: Config{Environment: "demo", KeyID: "key-id"}, baseURL: server.URL, key: key, http: server.Client()}
+	order, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{Ticker: "TEST", OutcomeSide: "no", Quantity: 10 * domain.Dollar, LimitPrice: 5600, TimeInForce: "good_till_canceled", ClientOrderID: "client-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.ID != "order-1" || order.Side != "no" || order.LimitPrice != 5600 {
+		t.Fatalf("unexpected order %+v", order)
+	}
+}
+
+func TestProductionClientRefusesOrderMutation(t *testing.T) {
+	client := &Client{cfg: Config{Environment: "production"}}
+	if _, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{Ticker: "TEST", OutcomeSide: "yes", Quantity: domain.Dollar, LimitPrice: 5000}); err == nil {
+		t.Fatal("production order placement was not locked")
+	}
+	if err := client.CancelOrder(context.Background(), "order-1"); err == nil {
+		t.Fatal("production cancellation was not locked")
 	}
 }

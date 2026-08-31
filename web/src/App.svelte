@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, Position, PriceQuote, Settings, Snapshot } from './types'
+  import type { BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
 
-  let snapshot: Snapshot = { events: [], orders: [], positions: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', latencyMs: 0, tradingEnabled: false }, bankroll: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
+  let snapshot: Snapshot = { events: [], parentOrders: [], orders: [], positions: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', latencyMs: 0, tradingEnabled: false }, bankroll: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
   let view: 'schedule' | 'settings' = 'schedule'
   let draftSports: string[] = []
   let draftExcludeAddedGames = false
@@ -25,6 +25,7 @@
   let slipPolicy: 'limit' | 'post_only' | 'ioc' = 'limit'
   let slipSlice = '25'
   let slipStatus = ''
+  let cancelingParentID = ''
   let monitorOpen = false
   let unreadFills = 0
   let fillNotices: { key: string; fill: Fill }[] = []
@@ -150,6 +151,23 @@
       slipStatus = `Parent order ${payload.id} created`
     } catch (cause) { slipStatus = cause instanceof Error ? cause.message : 'Unable to submit order' }
   }
+  function parentForOrder(order: Order) {
+    return snapshot.parentOrders.find(parent => parent.childOrderIds.includes(order.id))
+  }
+  async function cancelParent(parent: ParentOrder) {
+    if (!snapshot.health.tradingEnabled || cancelingParentID) return
+    cancelingParentID = parent.id
+    try {
+      const response = await fetch(`/api/parent-orders/${encodeURIComponent(parent.id)}`, { method: 'DELETE' })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || 'Unable to cancel demo order')
+      snapshot = { ...snapshot, parentOrders: [payload as ParentOrder, ...snapshot.parentOrders.filter(order => order.id !== parent.id)], orders: snapshot.orders.map(order => parent.childOrderIds.includes(order.id) ? { ...order, status: 'canceled', cashRisk: 0 } : order) }
+    } catch (cause) {
+      slipStatus = cause instanceof Error ? cause.message : 'Unable to cancel demo order'
+    } finally {
+      cancelingParentID = ''
+    }
+  }
   function applyStream(message: { type: string; data: unknown }) {
     if (message.type === 'schedule') snapshot = { ...snapshot, events: (message.data as Event[]) || [] }
     if (message.type === 'health') snapshot = { ...snapshot, health: message.data as Health }
@@ -162,6 +180,7 @@
       if (!seenFillIDs.has(next.id)) { seenFillIDs.add(next.id); notifyFill(next) }
     }
     if (message.type === 'order') { const next = message.data as Order; snapshot = { ...snapshot, orders: [next, ...snapshot.orders.filter(order => order.id !== next.id)] } }
+    if (message.type === 'parent_order') { const next = message.data as ParentOrder; snapshot = { ...snapshot, parentOrders: [next, ...snapshot.parentOrders.filter(order => order.id !== next.id)] } }
     if (message.type === 'position') { const next = message.data as Position; snapshot = { ...snapshot, positions: [next, ...snapshot.positions.filter(position => position.ticker !== next.ticker)] } }
   }
   function connect() {
@@ -265,7 +284,7 @@
         <div class="table-head"><span>Time / market</span><span>Exchange</span><span>Quantity</span><span>Raw</span><span>All-in</span><span>Fee</span><span>Cash risk</span></div>
         {#each snapshot.fills as fill}<div class="table-row"><span><b>{new Date(fill.createdAt).toLocaleTimeString()} · #{fill.rotation}</b><small>{fill.team} {fill.market}</small></span><span>{fill.exchange}</span><span>{qty(fill.quantity)}</span><span>{money(fill.rawPrice)}</span><span>{ml(fill.allInMoneyline)}</span><span>{money(fill.fee)}</span><span>{money(fill.cashRisk)}</span></div>{:else}<div class="empty">No fills yet</div>{/each}
       {:else if trayTab === 'orders'}
-        {#each snapshot.orders as order}<div class="table-row compact"><span><b>#{order.rotation} {order.market}</b><small>{order.ticker}</small></span><span>{order.exchange}</span><span>{qty(order.quantity)}</span><span>{money(order.limitPrice)}</span><span>{order.status}</span><span>—</span><span>{money(order.cashRisk)}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
+        {#each snapshot.orders as order}<div class="table-row compact"><span><b>#{order.rotation} {order.market}</b><small>{order.ticker}</small></span><span>{order.exchange}</span><span>{qty(order.quantity)}</span><span>{money(order.limitPrice)}</span><span>{order.status}</span><span>—</span><span class="order-risk">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
       {:else if trayTab === 'positions'}
         {#each snapshot.positions as position}<div class="table-row compact"><span><b>#{position.rotation} {position.market}</b><small>{position.ticker}</small></span><span>{position.exchange}</span><span>{qty(position.quantity)}</span><span>{money(position.averagePrice)}</span><span>{money(position.currentPrice)}</span><span>—</span><span>{money(position.unrealizedPnl)}</span></div>{:else}<div class="empty">No positions</div>{/each}
       {:else}<div class="empty">Historical audit records will appear here.</div>{/if}
@@ -297,7 +316,7 @@
       <div class="monitor-body">
         <header><b>Working orders</b><button on:click={() => showActivity('orders')}>Full orders</button></header>
         {#each workingOrders.slice(0, 5) as order}
-          <div class="monitor-row"><span><b>{order.market || order.ticker}</b><small>{order.exchange} · {order.status}</small></span><span><b>{qty(Math.max(0, order.quantity - order.filledQuantity))}</b><small>remaining</small></span></div>
+          <div class="monitor-row"><span><b>{order.market || order.ticker}</b><small>{order.exchange} · {order.status}</small></span><span><b>{qty(Math.max(0, order.quantity - order.filledQuantity))}</b><small>remaining</small></span>{#if snapshot.health.tradingEnabled && parentForOrder(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? '…' : 'Cancel'}</button>{/if}</div>
         {:else}<div class="monitor-empty">No working orders</div>{/each}
         <header><b>Recent fills</b><button on:click={() => showActivity('fills')}>Full fills</button></header>
         {#each snapshot.fills.slice(0, 3) as fill}

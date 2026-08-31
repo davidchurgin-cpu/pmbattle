@@ -137,6 +137,30 @@ type Order struct {
 	CreatedAt      time.Time `json:"createdAt"`
 }
 
+type ParentOrder struct {
+	ID                string    `json:"id"`
+	Exchange          string    `json:"exchange"`
+	EventID           string    `json:"eventId"`
+	Ticker            string    `json:"ticker"`
+	Rotation          string    `json:"rotation,omitempty"`
+	Outcome           string    `json:"outcome"`
+	Market            string    `json:"market"`
+	Side              string    `json:"side"`
+	Strategy          string    `json:"strategy"`
+	Policy            string    `json:"policy"`
+	Status            string    `json:"status"`
+	CashRiskTarget    Money     `json:"cashRiskTarget"`
+	ReservedRisk      Money     `json:"reservedRisk"`
+	FilledRisk        Money     `json:"filledRisk"`
+	RemainingRisk     Money     `json:"remainingRisk"`
+	PriceCapMoneyline int64     `json:"priceCapMoneyline"`
+	LimitPrice        Money     `json:"limitPrice"`
+	Quantity          Money     `json:"quantity"`
+	ChildOrderIDs     []string  `json:"childOrderIds"`
+	CreatedAt         time.Time `json:"createdAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
+}
+
 type Position struct {
 	Exchange      string `json:"exchange"`
 	Ticker        string `json:"ticker"`
@@ -178,14 +202,15 @@ type Settings struct {
 }
 
 type Snapshot struct {
-	Events    []CanonicalEvent `json:"events"`
-	Orders    []Order          `json:"orders"`
-	Positions []Position       `json:"positions"`
-	Fills     []Fill           `json:"fills"`
-	Health    Health           `json:"health"`
-	Bankroll  Money            `json:"bankroll"`
-	AtRisk    Money            `json:"atRisk"`
-	Settings  Settings         `json:"settings"`
+	Events       []CanonicalEvent `json:"events"`
+	ParentOrders []ParentOrder    `json:"parentOrders"`
+	Orders       []Order          `json:"orders"`
+	Positions    []Position       `json:"positions"`
+	Fills        []Fill           `json:"fills"`
+	Health       Health           `json:"health"`
+	Bankroll     Money            `json:"bankroll"`
+	AtRisk       Money            `json:"atRisk"`
+	Settings     Settings         `json:"settings"`
 }
 
 type StreamEvent struct {

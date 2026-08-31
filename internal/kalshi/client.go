@@ -1,6 +1,7 @@
 package kalshi
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -12,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -239,6 +241,70 @@ func (c *Client) Snapshot(ctx context.Context) ([]domain.Order, []domain.Positio
 		orders = append(orders, normalizeOrder(raw))
 	}
 	return orders, nil, nil, nil
+}
+
+func (c *Client) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequest) (domain.Order, error) {
+	if !strings.EqualFold(c.cfg.Environment, "demo") {
+		return domain.Order{}, errors.New("kalshi order mutation is locked outside the demo environment")
+	}
+	if c.key == nil || c.cfg.KeyID == "" {
+		return domain.Order{}, errors.New("kalshi order entry requires API credentials")
+	}
+	if request.OutcomeSide != "yes" && request.OutcomeSide != "no" {
+		return domain.Order{}, errors.New("kalshi outcome side must be yes or no")
+	}
+	price := request.LimitPrice
+	bookSide := "bid"
+	if request.OutcomeSide == "no" {
+		bookSide = "ask"
+		price = domain.Dollar - request.LimitPrice
+	}
+	payload := struct {
+		Ticker                  string `json:"ticker"`
+		ClientOrderID           string `json:"client_order_id"`
+		Side                    string `json:"side"`
+		Count                   string `json:"count"`
+		Price                   string `json:"price"`
+		TimeInForce             string `json:"time_in_force"`
+		SelfTradePreventionType string `json:"self_trade_prevention_type"`
+		PostOnly                bool   `json:"post_only"`
+		CancelOrderOnPause      bool   `json:"cancel_order_on_pause"`
+	}{
+		Ticker: request.Ticker, ClientOrderID: request.ClientOrderID, Side: bookSide,
+		Count: fixed.Format(request.Quantity), Price: fixed.Format(price), TimeInForce: request.TimeInForce,
+		SelfTradePreventionType: "taker_at_cross", PostOnly: request.PostOnly, CancelOrderOnPause: true,
+	}
+	var response struct {
+		Order rawOrder `json:"order"`
+	}
+	if err := c.doJSON(ctx, http.MethodPost, "/portfolio/events/orders", payload, &response, http.StatusCreated, http.StatusOK); err != nil {
+		return domain.Order{}, err
+	}
+	order := normalizeOrder(response.Order)
+	if order.ID == "" {
+		return domain.Order{}, errors.New("kalshi create order response did not include an order id")
+	}
+	order.Side = request.OutcomeSide
+	order.LimitPrice = request.LimitPrice
+	if order.Quantity == 0 {
+		order.Quantity = request.Quantity
+	}
+	if order.CashRisk == 0 {
+		if quote, err := pricing.Quote(request.LimitPrice, order.Quantity-order.FilledQuantity, false); err == nil {
+			order.CashRisk = quote.AllInCost
+		}
+	}
+	return order, nil
+}
+
+func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
+	if !strings.EqualFold(c.cfg.Environment, "demo") {
+		return errors.New("kalshi order mutation is locked outside the demo environment")
+	}
+	if strings.TrimSpace(orderID) == "" {
+		return errors.New("kalshi order id is required")
+	}
+	return c.doJSON(ctx, http.MethodDelete, "/portfolio/events/orders/"+url.PathEscape(orderID), nil, nil, http.StatusOK)
 }
 
 type rawOrder struct {
@@ -509,6 +575,47 @@ func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 		return fmt.Errorf("kalshi %s: %s", path, resp.Status)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (c *Client) doJSON(ctx context.Context, method, path string, input, output any, expected ...int) error {
+	var body io.Reader
+	if input != nil {
+		payload, err := json.Marshal(input)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
+	if err != nil {
+		return err
+	}
+	headers, err := c.authHeaders(method, "/trade-api/v2"+path)
+	if err != nil {
+		return err
+	}
+	req.Header = headers
+	if input != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	accepted := false
+	for _, status := range expected {
+		accepted = accepted || resp.StatusCode == status
+	}
+	if !accepted {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+		return fmt.Errorf("kalshi %s %s: %s: %s", method, path, resp.Status, strings.TrimSpace(string(message)))
+	}
+	if output == nil {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(output)
 }
 
 func (c *Client) authHeaders(method, path string) (http.Header, error) {

@@ -22,6 +22,22 @@ func TestMoneylineFromProbability(t *testing.T) {
 	}
 }
 
+func TestProbabilityFromMoneyline(t *testing.T) {
+	tests := []struct {
+		line int64
+		want domain.Money
+	}{{100, 5000}, {150, 4000}, {-150, 6000}, {-110, 5239}}
+	for _, tt := range tests {
+		got, err := ProbabilityFromMoneyline(tt.line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != tt.want {
+			t.Fatalf("moneyline %d: got %d want %d", tt.line, got, tt.want)
+		}
+	}
+}
+
 func TestKalshiFee(t *testing.T) {
 	price := domain.Money(5000)
 	quantity := domain.Money(100 * domain.Dollar)
@@ -32,6 +48,14 @@ func TestKalshiFee(t *testing.T) {
 	}
 	if maker != 4375 {
 		t.Fatalf("maker fee got %d want 4375", maker)
+	}
+}
+
+func TestKalshiFeeDoesNotOverflowLargeLowPriceOrder(t *testing.T) {
+	fee := KalshiFee(100, 500_000*domain.Dollar, false)
+	want := 346*domain.Dollar + domain.Dollar/2
+	if fee != want {
+		t.Fatalf("large-order fee got %d want %d", fee, want)
 	}
 }
 

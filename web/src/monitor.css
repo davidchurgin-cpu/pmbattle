@@ -35,13 +35,17 @@
 .monitor-body header { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; background: var(--panel-2); }
 .monitor-body header b { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
 .monitor-body header button { border: 0; background: transparent; color: var(--accent); font-size: 9px; cursor: pointer; }
-.monitor-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+.monitor-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 8px 10px; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
 .monitor-row:first-of-type { border-top: 0; }
 .monitor-row > span:last-child { text-align: right; }
 .monitor-row b, .monitor-row small { display: block; }
 .monitor-row b { overflow: hidden; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .monitor-row small { margin-top: 2px; color: var(--muted); font-size: 8px; }
 .monitor-row.fill { border-left: 2px solid var(--bid); }
+.order-risk { display: flex; gap: 6px; align-items: center; justify-content: space-between; }
+.cancel-order { border: 1px solid color-mix(in srgb, var(--ask) 55%, var(--line)); border-radius: 4px; background: transparent; color: var(--ask); padding: 4px 6px; font: inherit; cursor: pointer; }
+.cancel-order:hover:not(:disabled) { background: color-mix(in srgb, var(--ask) 10%, transparent); }
+.cancel-order:disabled { cursor: wait; opacity: .55; }
 .monitor-empty { padding: 14px; color: var(--muted); font-size: 9px; text-align: center; }
 
 .fill-notices {

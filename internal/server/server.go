@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/davidchurgin-cpu/pmbattle/internal/app"
+	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
+	orderengine "github.com/davidchurgin-cpu/pmbattle/internal/orders"
 	"github.com/gorilla/websocket"
 )
 
@@ -31,6 +34,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.updateSettings)
 	mux.HandleFunc("GET /api/books/{ticker}", s.book)
 	mux.HandleFunc("DELETE /api/books/{ticker}", s.releaseBook)
+	mux.HandleFunc("POST /api/parent-orders", s.createParentOrder)
+	mux.HandleFunc("DELETE /api/parent-orders/{id}", s.cancelParentOrder)
 	mux.HandleFunc("GET /api/ws", s.ws)
 	if s.static != nil {
 		mux.Handle("/", spaHandler(s.static))
@@ -79,6 +84,58 @@ func (s *Server) book(w http.ResponseWriter, r *http.Request) {
 func (s *Server) releaseBook(w http.ResponseWriter, r *http.Request) {
 	s.service.ReleaseBook(r.PathValue("ticker"))
 	w.WriteHeader(http.StatusNoContent)
+}
+func (s *Server) createParentOrder(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var input struct {
+		EventID           string       `json:"eventId"`
+		Ticker            string       `json:"ticker"`
+		Rotation          string       `json:"rotation"`
+		Outcome           string       `json:"outcome"`
+		Market            string       `json:"market"`
+		Side              string       `json:"side"`
+		Strategy          string       `json:"strategy"`
+		Policy            string       `json:"policy"`
+		CashRisk          domain.Money `json:"cashRisk"`
+		PriceCapMoneyline int64        `json:"priceCapMoneyline"`
+		LimitPrice        domain.Money `json:"limitPrice"`
+		SliceQuantity     domain.Money `json:"sliceQuantity"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid order request"})
+		return
+	}
+	parent, err := s.service.CreateParentOrder(r.Context(), app.CreateParentOrderInput{
+		EventID: input.EventID, Ticker: input.Ticker, Rotation: input.Rotation, Outcome: input.Outcome,
+		Market: input.Market, Side: input.Side, Strategy: input.Strategy, Policy: input.Policy,
+		CashRisk: input.CashRisk, PriceCapMoneyline: input.PriceCapMoneyline, LimitPrice: input.LimitPrice,
+		SliceQuantity: input.SliceQuantity,
+	})
+	if err != nil {
+		status := http.StatusUnprocessableEntity
+		if errors.Is(err, orderengine.ErrDisabled) {
+			status = http.StatusForbidden
+		} else if strings.Contains(err.Error(), "synchronized") {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, parent)
+}
+func (s *Server) cancelParentOrder(w http.ResponseWriter, r *http.Request) {
+	parent, err := s.service.CancelParentOrder(r.Context(), r.PathValue("id"))
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, orderengine.ErrDisabled) {
+			status = http.StatusForbidden
+		} else if errors.Is(err, orderengine.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, parent)
 }
 func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
