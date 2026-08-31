@@ -25,6 +25,10 @@
   let slipPolicy: 'limit' | 'post_only' | 'ioc' = 'limit'
   let slipSlice = '25'
   let slipStatus = ''
+  let monitorOpen = false
+  let unreadFills = 0
+  let fillNotices: { key: string; fill: Fill }[] = []
+  const seenFillIDs = new Set<string>()
   let book: OrderBook | null = null
   let trayOpen = true
   let trayTab: 'orders' | 'positions' | 'fills' | 'history' = 'fills'
@@ -58,11 +62,23 @@
   $: displayBids = !book ? [] : bookSide === 'yes' ? book.yes.slice(0, 6) : book.no.slice(0, 6).map(invertLevel)
   $: slipQuantity = slipPrice > 0 ? Math.max(10000, Math.floor((Number(slipRisk) || 0) * 100000000 / slipPrice)) : 10000
   $: slipQuote = slipPrice > 0 ? takerQuote({ price: slipPrice, quantity: slipQuantity }) : null
+  $: workingOrders = snapshot.orders.filter(order => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((order.status || '').toLowerCase()))
 
   function normalizeSnapshot(value: Snapshot): Snapshot {
     return { ...value, events: value.events || [], orders: value.orders || [], positions: value.positions || [], fills: value.fills || [], settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
   }
   function normalizeBook(value: OrderBook): OrderBook { return { ...value, yes: value.yes || [], no: value.no || [] } }
+  function fillName(fill: Fill) { return fill.team || fill.market || fill.ticker }
+  function dismissNotice(key: string) { fillNotices = fillNotices.filter(notice => notice.key !== key) }
+  function notifyFill(fill: Fill) {
+    const key = fill.id || `${fill.ticker}-${Date.now()}`
+    fillNotices = [{ key, fill }, ...fillNotices.filter(notice => notice.key !== key)].slice(0, 3)
+    unreadFills += 1
+    setTimeout(() => dismissNotice(key), 12000)
+  }
+  function toggleMonitor() { monitorOpen = !monitorOpen; if (monitorOpen) unreadFills = 0 }
+  function showActivity(tab: 'orders' | 'fills') { trayTab = tab; trayOpen = true; unreadFills = 0 }
+  function viewFill(key: string) { dismissNotice(key); monitorOpen = true; unreadFills = 0 }
 
   $: sports = ['ALL', ...new Set(snapshot.events.map(event => event.sport.toUpperCase()))]
   $: leagues = ['ALL', ...new Set(snapshot.events.filter(event => selectedSport === 'ALL' || event.sport.toUpperCase() === selectedSport).map(event => event.league.toUpperCase()))]
@@ -124,7 +140,11 @@
     if (message.type === 'settings') { snapshot = { ...snapshot, settings: message.data as Settings }; draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames }
     if (message.type === 'orderbook') { const next = normalizeBook(message.data as OrderBook); if (next.ticker === selectedQuote?.ticker) book = next }
     if (message.type === 'book_stale') { const next = normalizeBook(message.data as OrderBook); if (next.ticker === selectedQuote?.ticker) book = { ...next, stale: true } }
-    if (message.type === 'fill') { const next = message.data as Fill; snapshot = { ...snapshot, fills: [next, ...snapshot.fills].slice(0, 250) } }
+    if (message.type === 'fill') {
+      const next = message.data as Fill
+      snapshot = { ...snapshot, fills: [next, ...snapshot.fills.filter(fill => fill.id !== next.id)].slice(0, 250) }
+      if (!seenFillIDs.has(next.id)) { seenFillIDs.add(next.id); notifyFill(next) }
+    }
     if (message.type === 'order') { const next = message.data as Order; snapshot = { ...snapshot, orders: [next, ...snapshot.orders.filter(order => order.id !== next.id)] } }
     if (message.type === 'position') { const next = message.data as Position; snapshot = { ...snapshot, positions: [next, ...snapshot.positions.filter(position => position.ticker !== next.ticker)] } }
   }
@@ -136,7 +156,7 @@
   }
   onMount(async () => {
     document.documentElement.dataset.theme = theme
-    try { const response = await fetch('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = normalizeSnapshot(await response.json()); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
+    try { const response = await fetch('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = normalizeSnapshot(await response.json()); snapshot.fills.forEach(fill => seenFillIDs.add(fill.id)); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
   })
   $: document.documentElement.dataset.theme = theme
 </script>
@@ -250,6 +270,31 @@
       </section>
     </main>
   {/if}
+  <aside class="order-monitor" class:open={monitorOpen} aria-label="Order monitor">
+    <button class="monitor-toggle" on:click={toggleMonitor} aria-expanded={monitorOpen}>
+      <span class="monitor-live"><i></i>ORDERS</span>
+      <b>{workingOrders.length} working</b>
+      {#if unreadFills}<em>{unreadFills} new fill{unreadFills === 1 ? '' : 's'}</em>{:else}<small>{snapshot.fills[0] ? `Last fill ${time(snapshot.fills[0].createdAt)}` : 'Monitoring fills'}</small>{/if}
+      <span>{monitorOpen ? '▼' : '▲'}</span>
+    </button>
+    {#if monitorOpen}
+      <div class="monitor-body">
+        <header><b>Working orders</b><button on:click={() => showActivity('orders')}>Full orders</button></header>
+        {#each workingOrders.slice(0, 5) as order}
+          <div class="monitor-row"><span><b>{order.market || order.ticker}</b><small>{order.exchange} · {order.status}</small></span><span><b>{qty(Math.max(0, order.quantity - order.filledQuantity))}</b><small>remaining</small></span></div>
+        {:else}<div class="monitor-empty">No working orders</div>{/each}
+        <header><b>Recent fills</b><button on:click={() => showActivity('fills')}>Full fills</button></header>
+        {#each snapshot.fills.slice(0, 3) as fill}
+          <div class="monitor-row fill"><span><b>{fillName(fill)}</b><small>{time(fill.createdAt)} · {fill.exchange}</small></span><span><b>{qty(fill.quantity)}</b><small>{ml(fill.allInMoneyline)}</small></span></div>
+        {:else}<div class="monitor-empty">No fills received</div>{/each}
+      </div>
+    {/if}
+  </aside>
+  <section class="fill-notices" aria-live="assertive" aria-label="Fill notifications">
+    {#each fillNotices as notice (notice.key)}
+      <article class="fill-notice"><i></i><div><small>FILL RECEIVED</small><b>{fillName(notice.fill)}</b><span>{qty(notice.fill.quantity)} contracts · {ml(notice.fill.allInMoneyline)} all-in</span></div><button on:click={() => viewFill(notice.key)}>View</button><button class="notice-close" aria-label="Dismiss fill notification" on:click={() => dismissNotice(notice.key)}>×</button></article>
+    {/each}
+  </section>
   {#if slipOpen && selectedQuote && selectedEvent}
     <aside class="order-slip" aria-label="Order slip">
       <header><div><small>ORDER SLIP · KALSHI</small><b>{selectedQuote.outcome} {selectedMarket?.line || ''}</b></div><button aria-label="Close order slip" on:click={() => slipOpen = false}>×</button></header>

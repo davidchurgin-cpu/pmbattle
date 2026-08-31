@@ -17,6 +17,7 @@ Milestone 1—the read-only terminal foundation—is implemented. The repository
 - `internal/server` exposes read-only JSON and WebSocket endpoints and serves the embedded app.
 - `web/src/App.svelte` contains the lightweight sportsbook board, instant search, filters, click-to-expand inline book ladder, and bottom activity tray.
 - `web/src/orderslip.css` isolates the small floating order-slip surface from the critical board styles.
+- `web/src/monitor.css` contains the fixed order monitor and transient fill-alert styling.
 
 ## Browser API
 
@@ -41,6 +42,8 @@ There are intentionally no mutation or trading endpoints in Milestone 1.
 - Main spread and total lines are selected from the active strike closest to a 50% midpoint. Up to five nearby strikes are retained for the inline line selector.
 - Clicking a game expands its order book in place. Only the selected ticker receives a book subscription; selecting another ticker cancels the old stream, and closing the dropdown releases it. The authenticated account stream remains independent and continuously connected.
 - The Yes and No tabs are real views of the same binary book: the No ladder is derived by complementing the synchronized Yes-price book. Clicking any bid or ask copies its exact side and price into the floating order slip. Submission stays disabled because no trading endpoint exists yet.
+- The dashboard monitor remains fixed while the user searches or changes markets. It shows normalized remaining quantities for working orders and the three latest fills. Each new WebSocket fill produces a 12-second visual alert and unread count; snapshot/replayed fill IDs are suppressed.
+- REST and WebSocket orders are decoded from Kalshi's current `*_dollars` and `*_count_fp` fields into fixed-point internal values. This is required for reliable remaining-quantity and cash-risk monitoring.
 - Kalshi sequence numbers are subscription-wide, not ticker-wide. A book-stream gap forces that selected ticker to reconnect and remain stale until a new snapshot arrives.
 - Sports preferences are stored in SQLite. No saved preference means all sports; saving an empty selection intentionally loads no sports.
 - Extra/added games are identified by an exactly six-digit numeric schedule event ID. The Settings tab can exclude them before market matching and subscription.

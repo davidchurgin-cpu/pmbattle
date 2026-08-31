@@ -1,5 +1,6 @@
 import './styles.css'
 import './orderslip.css'
+import './monitor.css'
 import App from './App.svelte'
 import { mount } from 'svelte'
 

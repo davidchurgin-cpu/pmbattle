@@ -3,6 +3,7 @@ package kalshi
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
 )
@@ -31,5 +32,16 @@ func TestTranslateOrderBook(t *testing.T) {
 	book := event.Data.(domain.OrderBook)
 	if book.Sequence != 22 || book.Yes[0].Price != 5000 || book.Yes[0].Quantity != 100*domain.Dollar {
 		t.Fatalf("unexpected book %+v", book)
+	}
+}
+
+func TestNormalizeOrderUsesCurrentFixedPointFields(t *testing.T) {
+	created := time.Date(2026, time.August, 31, 12, 0, 0, 0, time.UTC)
+	order := normalizeOrder(rawOrder{ID: "order-1", Ticker: "TEST", Status: "resting", Side: "no", NoPrice: "0.4400", Filled: "2.50", Remaining: "7.50", Initial: "10.00", Created: created})
+	if order.ID != "order-1" || order.LimitPrice != 4400 || order.Quantity != 10*domain.Dollar || order.FilledQuantity != 25_000 {
+		t.Fatalf("unexpected normalized order %+v", order)
+	}
+	if order.CashRisk <= 0 || !order.CreatedAt.Equal(created) {
+		t.Fatalf("expected risk and timestamp, got %+v", order)
 	}
 }

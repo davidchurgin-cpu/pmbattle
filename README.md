@@ -16,6 +16,7 @@ The current release is deliberately **read-only**. It includes the live schedule
 - Click-to-expand, full-depth inline order-book ladders with bids, asks, contracts, cash totals, and raw-to-fee-included moneylines
 - On-demand order-book subscriptions: PMBattle loads only the selected market, releases it when closed, and never streams every game unnecessarily
 - Clickable Yes/No bid and ask levels that populate a floating bottom order slip with the exact price, cash-at-risk field, fee-adjusted cap, and basic/iceberg/follow controls
+- Always-visible dashboard order monitor with working quantities and recent fills, plus immediate visual alerts for every newly streamed full or partial fill
 - Sequence-checked in-memory order books with stale-book detection
 - Live browser stream for books, health, fills, orders, and positions
 - SQLite WAL persistence for schedules, mappings, settings, and audit records
@@ -92,6 +93,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - Uncertain market mappings are not displayed as tradable markets.
 - WebSocket sequence gaps are validated at Kalshi's subscription level; a gap reconnects the feed and marks cached books stale until fresh snapshots arrive.
 - Account activity stays connected independently from the on-demand order book, so orders and fills remain live while no game is expanded.
+- Historical fills load quietly at startup; only new authenticated fill events create alerts, preventing notification spam after reconnects.
 - The UI clearly identifies simulated/live mode and stale data.
 - Credentials never pass through the browser.
 - The server enforces same-origin browser WebSockets and basic security headers.

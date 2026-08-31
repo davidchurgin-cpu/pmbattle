@@ -229,14 +229,56 @@ func (c *Client) Snapshot(ctx context.Context) ([]domain.Order, []domain.Positio
 		return nil, nil, nil, nil
 	}
 	var ordersPayload struct {
-		Orders []domain.Order `json:"orders"`
+		Orders []rawOrder `json:"orders"`
 	}
 	if err := c.getJSON(ctx, "/portfolio/orders?status=resting", &ordersPayload); err != nil {
 		return nil, nil, nil, err
 	}
-	// Raw portfolio shapes vary across API migrations; keep reconciliation tolerant
-	// and let the WebSocket streams populate normalized position/fill records.
-	return ordersPayload.Orders, nil, nil, nil
+	orders := make([]domain.Order, 0, len(ordersPayload.Orders))
+	for _, raw := range ordersPayload.Orders {
+		orders = append(orders, normalizeOrder(raw))
+	}
+	return orders, nil, nil, nil
+}
+
+type rawOrder struct {
+	ID        string    `json:"order_id"`
+	Ticker    string    `json:"ticker"`
+	Status    string    `json:"status"`
+	Side      string    `json:"side"`
+	Action    string    `json:"action"`
+	YesPrice  string    `json:"yes_price_dollars"`
+	NoPrice   string    `json:"no_price_dollars"`
+	Filled    string    `json:"fill_count_fp"`
+	Remaining string    `json:"remaining_count_fp"`
+	Initial   string    `json:"initial_count_fp"`
+	Created   time.Time `json:"created_time"`
+	CreatedMS int64     `json:"created_ts_ms"`
+}
+
+func normalizeOrder(raw rawOrder) domain.Order {
+	priceText := raw.YesPrice
+	if raw.Side == "no" && raw.NoPrice != "" {
+		priceText = raw.NoPrice
+	}
+	price, _ := fixed.Parse(priceText)
+	filled, _ := fixed.Parse(raw.Filled)
+	remaining, _ := fixed.Parse(raw.Remaining)
+	initial, _ := fixed.Parse(raw.Initial)
+	if initial == 0 {
+		initial = filled + remaining
+	}
+	created := raw.Created
+	if created.IsZero() && raw.CreatedMS > 0 {
+		created = time.UnixMilli(raw.CreatedMS).UTC()
+	}
+	cashRisk := domain.Money(0)
+	if remaining > 0 {
+		if quote, err := pricing.Quote(price, remaining, false); err == nil {
+			cashRisk = quote.AllInCost
+		}
+	}
+	return domain.Order{ID: raw.ID, Exchange: "Kalshi", Ticker: raw.Ticker, Market: raw.Ticker, Side: raw.Side, Status: raw.Status, Quantity: initial, FilledQuantity: filled, LimitPrice: price, CashRisk: cashRisk, CreatedAt: created}
 }
 
 func (c *Client) SubscribeAccount(ctx context.Context) (*exchange.Subscription, error) {
@@ -406,23 +448,11 @@ func translate(message wsMessage) (domain.StreamEvent, bool, error) {
 		fill := domain.Fill{ID: raw.TradeID, Exchange: "Kalshi", Ticker: raw.Ticker, Market: raw.Ticker, Side: raw.Side, Quantity: quantity, RawPrice: price, AllInMoneyline: quote.AllInMoneyline, Fee: fee, CashRisk: quote.AllInCost, CreatedAt: created}
 		return domain.StreamEvent{Type: "fill", Data: fill}, true, nil
 	case "user_order":
-		var raw struct {
-			ID      string    `json:"order_id"`
-			Ticker  string    `json:"ticker"`
-			Status  string    `json:"status"`
-			Side    string    `json:"side"`
-			Price   string    `json:"yes_price_dollars"`
-			Filled  string    `json:"fill_count_fp"`
-			Initial string    `json:"initial_count_fp"`
-			Created time.Time `json:"created_time"`
-		}
+		var raw rawOrder
 		if err := json.Unmarshal(message.Msg, &raw); err != nil {
 			return domain.StreamEvent{}, false, err
 		}
-		price, _ := fixed.Parse(raw.Price)
-		quantity, _ := fixed.Parse(raw.Initial)
-		filled, _ := fixed.Parse(raw.Filled)
-		order := domain.Order{ID: raw.ID, Exchange: "Kalshi", Ticker: raw.Ticker, Market: raw.Ticker, Side: raw.Side, Status: raw.Status, Quantity: quantity, FilledQuantity: filled, LimitPrice: price, CashRisk: domain.Money(int64(price) * int64(quantity) / int64(domain.Dollar)), CreatedAt: raw.Created}
+		order := normalizeOrder(raw)
 		return domain.StreamEvent{Type: "order", Data: order}, true, nil
 	case "market_position":
 		var raw struct {
