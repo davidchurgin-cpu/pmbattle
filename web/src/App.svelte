@@ -57,9 +57,24 @@
   }
   const levelPrice = (level: BookLevel) => `${ml(rawML(level.price))} → ${ml(takerQuote(level).moneyline)}`
   const marketLabel = (market: MarketView | null) => market?.type === 'spread' ? 'Spread' : market?.type === 'total' ? 'Total' : 'Moneyline'
+  type SelectionRole = 'away' | 'home' | 'over' | 'under'
+  function quoteRole(event: Event | null, market: MarketView | null, quote: PriceQuote | null): SelectionRole {
+    if (market?.type === 'total') return quote?.outcome.toLowerCase() === 'under' ? 'under' : 'over'
+    return event?.participants[1]?.name === quote?.outcome ? 'home' : 'away'
+  }
+  const oppositeRole = (role: SelectionRole): SelectionRole => role === 'away' ? 'home' : role === 'home' ? 'away' : role === 'over' ? 'under' : 'over'
+  function pairedQuote(market: MarketView | null, quote: PriceQuote | null, side: 'yes' | 'no') {
+    return [market?.away, market?.home, market?.over, market?.under].find(candidate => candidate?.ticker === quote?.ticker && (candidate?.side || 'yes') === side) || null
+  }
   const invertLevel = (level: BookLevel): BookLevel => ({ price: 10000 - level.price, quantity: level.quantity })
   $: displayAsks = !book ? [] : bookSide === 'yes' ? book.no.slice(0, 6) : book.yes.slice(0, 6).map(invertLevel)
   $: displayBids = !book ? [] : bookSide === 'yes' ? book.yes.slice(0, 6) : book.no.slice(0, 6).map(invertLevel)
+
+  $: baseRole = quoteRole(selectedEvent, selectedMarket, selectedQuote)
+  $: activeQuote = pairedQuote(selectedMarket, selectedQuote, bookSide)
+  $: activeRole = activeQuote ? quoteRole(selectedEvent, selectedMarket, activeQuote) : selectedQuote && bookSide !== (selectedQuote.side || 'yes') ? oppositeRole(baseRole) : baseRole
+  $: activeOutcome = activeQuote?.outcome || (selectedQuote && bookSide !== (selectedQuote.side || 'yes') ? `Not ${selectedQuote.outcome}` : selectedQuote?.outcome || '')
+  $: activeMoneyline = displayAsks[0] ? takerQuote(displayAsks[0]).moneyline : activeQuote?.allInMoneyline || selectedQuote?.allInMoneyline
   $: slipQuantity = slipPrice > 0 ? Math.max(10000, Math.floor((Number(slipRisk) || 0) * 100000000 / slipPrice)) : 10000
   $: slipQuote = slipPrice > 0 ? takerQuote({ price: slipPrice, quantity: slipQuantity }) : null
   $: workingOrders = snapshot.orders.filter(order => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((order.status || '').toLowerCase()))
@@ -100,7 +115,7 @@
   }
   async function select(event: Event, quote?: PriceQuote, market?: MarketView) {
     if (!quote) return
-    selectedEvent = event; selectedQuote = quote; selectedMarket = market || event.markets?.find(value => [value.away, value.home, value.over, value.under].some(valueQuote => valueQuote?.ticker === quote.ticker)) || null; expandedEventID = event.id; book = null
+    selectedEvent = event; selectedQuote = quote; selectedMarket = market || event.markets?.find(value => [value.away, value.home, value.over, value.under].some(valueQuote => valueQuote?.ticker === quote.ticker)) || null; bookSide = quote.side || 'yes'; expandedEventID = event.id; slipOpen = false; book = null
     try { const response = await fetch(`/api/books/${encodeURIComponent(quote.ticker)}`); if (response.ok) book = normalizeBook(await response.json()) } catch { /* the live snapshot will arrive over the browser stream */ }
   }
   function toggleGame(event: Event) {
@@ -124,11 +139,12 @@
     slipStatus = ''
     slipOpen = true
   }
+  function setBookSide(side: 'yes' | 'no') { bookSide = side; slipOpen = false }
   async function submitOrder() {
     if (!snapshot.health.tradingEnabled) { slipStatus = 'Demo order entry is locked on this server.'; return }
     slipStatus = 'Submitting…'
     try {
-      const response = await fetch('/api/parent-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId: selectedEvent?.id, rotation: selectedEvent?.participants.find(participant => participant.name === selectedQuote?.outcome)?.rotation || '', ticker: selectedQuote?.ticker, outcome: selectedQuote?.outcome, market: marketLabel(selectedMarket), side: bookSide, strategy: slipStrategy, policy: slipPolicy, cashRisk: Math.round((Number(slipRisk) || 0) * 10000), priceCapMoneyline: Number(slipCap), limitPrice: slipPrice, sliceQuantity: Math.round((Number(slipSlice) || 0) * 10000) }) })
+      const response = await fetch('/api/parent-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId: selectedEvent?.id, rotation: selectedEvent?.participants.find(participant => participant.name === selectedQuote?.outcome)?.rotation || '', ticker: selectedQuote?.ticker, outcome: activeOutcome, market: marketLabel(selectedMarket), side: bookSide, strategy: slipStrategy, policy: slipPolicy, cashRisk: Math.round((Number(slipRisk) || 0) * 10000), priceCapMoneyline: Number(slipCap), limitPrice: slipPrice, sliceQuantity: Math.round((Number(slipSlice) || 0) * 10000) }) })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Order was rejected')
       slipStatus = `Parent order ${payload.id} created`
@@ -194,24 +210,24 @@
         <section class="game" class:selected={selectedEvent?.id === event.id} role="button" tabindex="0" on:click={() => toggleGame(event)} on:keydown={(key) => { if (key.key === 'Enter' || key.key === ' ') toggleGame(event) }}>
           <div class="rotations">{#each event.participants as participant}<b>{participant.rotation}</b>{/each}</div>
           <div class="teams">{#each event.participants as participant}<div><strong>{participant.name}</strong><small>{participant.abbreviation}</small></div>{/each}</div>
-          <div class="market">{#if moneyline}{#each [moneyline.away, moneyline.home] as quote}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, moneyline)}><b>{ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
-          <div class="market">{#if spreadMarket}{#each [spreadMarket.away, spreadMarket.home] as quote, index}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, spreadMarket)}><b>{spread(spreadMarket.line, index === 0)} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
-          <div class="market">{#if total}{#each [total.over, total.under] as quote, index}<button class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, total)}><b>{index === 0 ? 'O' : 'U'} {total.line} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
+          <div class="market">{#if moneyline}{#each [moneyline.away, moneyline.home] as quote, index}<button class={index === 0 ? 'side-away' : 'side-home'} class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, moneyline)}><i class="side-tag">{index === 0 ? 'AWAY' : 'HOME'}</i><b>{ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
+          <div class="market">{#if spreadMarket}{#each [spreadMarket.away, spreadMarket.home] as quote, index}<button class={index === 0 ? 'side-away' : 'side-home'} class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, spreadMarket)}><i class="side-tag">{index === 0 ? 'AWAY' : 'HOME'}</i><b>{spread(spreadMarket.line, index === 0)} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
+          <div class="market">{#if total}{#each [total.over, total.under] as quote, index}<button class={index === 0 ? 'side-over' : 'side-under'} class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, total)}><i class="side-tag">{index === 0 ? 'OVER' : 'UNDER'}</i><b>{index === 0 ? 'O' : 'U'} {total.line} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
           <div class="start"><b>{day(event.startTime)}</b><span>{time(event.startTime)}</span><small>{expandedEventID === event.id ? 'Close ▲' : 'Book ▼'}</small></div>
         </section>
         {#if expandedEventID === event.id && selectedEvent?.id === event.id && selectedQuote && selectedMarket}
           <section class="inline-book" aria-label="Live order book">
             <header class="book-toolbar">
-              <div class="book-market-title"><small>{marketLabel(selectedMarket)}</small><h2>{selectedQuote.outcome}{selectedMarket.line ? ` ${selectedMarket.line}` : ''}</h2></div>
+              <div class="book-market-title" class:role-away={activeRole === 'away'} class:role-home={activeRole === 'home'} class:role-over={activeRole === 'over'} class:role-under={activeRole === 'under'}><small><i class="selection-role">{activeRole.toUpperCase()}</i>{marketLabel(selectedMarket)}</small><h2>{activeOutcome}{selectedMarket.line ? ` ${selectedMarket.line}` : ''}</h2></div>
               {#if selectedMarket.options?.length}
                 <div class="strikes" aria-label="Market lines">
                   {#each selectedMarket.options as option}<button class:active={option.line === selectedMarket.line} on:click={() => selectOption(option)}>{option.line}</button>{/each}
                 </div>
               {/if}
-              <div class="top-quote"><b>{ml(selectedQuote.allInMoneyline)}</b><small>fee included</small></div>
+              <div class="top-quote"><b>{ml(activeMoneyline)}</b><small>fee included</small></div>
               <div class="book-state" class:stale={!book || book.stale}><i></i>{!book ? 'CONNECTING' : book.stale ? 'STALE' : 'LIVE'}</div>
             </header>
-            <nav class="trade-tabs"><button class:active={bookSide === 'yes'} on:click={() => bookSide = 'yes'}>Trade Yes</button><button class:active={bookSide === 'no'} on:click={() => bookSide = 'no'}>Trade No</button><span>{snapshot.health.tradingEnabled ? 'DEMO ORDERS' : 'READ-ONLY'}</span></nav>
+            <nav class="trade-tabs"><button class:active={bookSide === 'yes'} on:click={() => setBookSide('yes')}>Trade Yes</button><button class:active={bookSide === 'no'} on:click={() => setBookSide('no')}>Trade No</button><span>{snapshot.health.tradingEnabled ? 'DEMO ORDERS' : 'READ-ONLY'}</span></nav>
             <div class="ladder-head"><span></span><span>Price <small>raw → fee included</small></span><span>Contracts</span><span>Total</span></div>
             {#if book && (displayAsks.length || displayBids.length)}
               <div class="ladder asks">
@@ -219,7 +235,7 @@
                   <button class="ladder-row" title="Use this ask in the order slip" on:click={() => chooseBookPrice(level, 'cross')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayAsks.map(value => Number(value.quantity))) * 100)}%`}><b>ASK</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></button>
                 {/each}
               </div>
-              <div class="book-center"><b>Trade {bookSide === 'yes' ? 'Yes' : 'No'}</b><span>{selectedQuote.outcome}</span></div>
+              <div class="book-center" class:role-away={activeRole === 'away'} class:role-home={activeRole === 'home'} class:role-over={activeRole === 'over'} class:role-under={activeRole === 'under'}><b>{activeRole.toUpperCase()} · Trade {bookSide === 'yes' ? 'Yes' : 'No'}</b><span>{activeOutcome}</span></div>
               <div class="ladder bids">
                 {#each displayBids as level}
                   <button class="ladder-row" title="Join this bid in the order slip" on:click={() => chooseBookPrice(level, 'join')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayBids.map(value => Number(value.quantity))) * 100)}%`}><b>BID</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></button>
@@ -297,7 +313,7 @@
   </section>
   {#if slipOpen && selectedQuote && selectedEvent}
     <aside class="order-slip" aria-label="Order slip">
-      <header><div><small>ORDER SLIP · KALSHI</small><b>{selectedQuote.outcome} {selectedMarket?.line || ''}</b></div><button aria-label="Close order slip" on:click={() => slipOpen = false}>×</button></header>
+      <header class:role-away={activeRole === 'away'} class:role-home={activeRole === 'home'} class:role-over={activeRole === 'over'} class:role-under={activeRole === 'under'}><div><small>ORDER SLIP · KALSHI · <i class="selection-role">{activeRole.toUpperCase()}</i></small><b>{activeOutcome} {selectedMarket?.line || ''}</b></div><button aria-label="Close order slip" on:click={() => slipOpen = false}>×</button></header>
       <div class="slip-price"><span>{slipIntent === 'cross' ? `Buy ${bookSide.toUpperCase()}` : `Join ${bookSide.toUpperCase()} bid`}</span><b>{ml(rawML(slipPrice))} <i>→ {ml(slipQuote?.moneyline)}</i></b><small>raw → fee included</small></div>
       <div class="slip-strategies"><button class:active={slipStrategy === 'basic'} on:click={() => slipStrategy = 'basic'}>Basic</button><button class:active={slipStrategy === 'iceberg'} on:click={() => slipStrategy = 'iceberg'}>Iceberg</button><button class:active={slipStrategy === 'follow'} on:click={() => { slipStrategy = 'follow'; slipPolicy = 'post_only' }}>Follow</button></div>
       <div class="slip-fields">

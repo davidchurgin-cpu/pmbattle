@@ -62,6 +62,7 @@ type PriceQuote struct {
 	Exchange          string `json:"exchange"`
 	Ticker            string `json:"ticker"`
 	Outcome           string `json:"outcome"`
+	Side              string `json:"side"`
 	RawPrice          Money  `json:"rawPrice"`
 	MakerFee          Money  `json:"makerFee"`
 	TakerFee          Money  `json:"takerFee"`
@@ -83,11 +84,11 @@ type MarketView struct {
 }
 
 type MarketOption struct {
-	Line   string      `json:"line"`
-	Away   *PriceQuote `json:"away,omitempty"`
-	Home   *PriceQuote `json:"home,omitempty"`
-	Over   *PriceQuote `json:"over,omitempty"`
-	Under  *PriceQuote `json:"under,omitempty"`
+	Line  string      `json:"line"`
+	Away  *PriceQuote `json:"away,omitempty"`
+	Home  *PriceQuote `json:"home,omitempty"`
+	Over  *PriceQuote `json:"over,omitempty"`
+	Under *PriceQuote `json:"under,omitempty"`
 }
 
 type BookLevel struct {

@@ -18,6 +18,7 @@ Milestone 1—the read-only terminal foundation—is implemented. The repository
 - `web/src/App.svelte` contains the lightweight sportsbook board, instant search, filters, click-to-expand inline book ladder, and bottom activity tray.
 - `web/src/orderslip.css` isolates the small floating order-slip surface from the critical board styles.
 - `web/src/monitor.css` contains the fixed order monitor and transient fill-alert styling.
+- `web/src/sides.css` owns the shared Away/Home/Over/Under color system and labels.
 
 ## Browser API
 
@@ -43,6 +44,7 @@ There are intentionally no mutation or trading endpoints in Milestone 1.
 - Clicking a game expands its order book in place. Only the selected ticker receives a book subscription; selecting another ticker cancels the old stream, and closing the dropdown releases it. The authenticated account stream remains independent and continuously connected.
 - The Yes and No tabs are real views of the same binary book: the No ladder is derived by complementing the synchronized Yes-price book. Clicking any bid or ask copies its exact side and price into the floating order slip. Submission stays disabled because no trading endpoint exists yet.
 - The dashboard monitor remains fixed while the user searches or changes markets. It shows normalized remaining quantities for working orders and the three latest fills. Each new WebSocket fill produces a 12-second visual alert and unread count; snapshot/replayed fill IDs are suppressed.
+- Every quote carries its explicit Kalshi `yes`/`no` contract side. Selecting Away, Home, Over, or Under initializes the correct book side, while labels and four accessible colors remain consistent through the board, expanded book, and order slip.
 - REST and WebSocket orders are decoded from Kalshi's current `*_dollars` and `*_count_fp` fields into fixed-point internal values. This is required for reliable remaining-quantity and cash-risk monitoring.
 - Kalshi sequence numbers are subscription-wide, not ticker-wide. A book-stream gap forces that selected ticker to reconnect and remain stale until a new snapshot arrives.
 - Sports preferences are stored in SQLite. No saved preference means all sports; saving an empty selection intentionally loads no sports.

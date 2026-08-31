@@ -17,6 +17,7 @@ The current release is deliberately **read-only**. It includes the live schedule
 - On-demand order-book subscriptions: PMBattle loads only the selected market, releases it when closed, and never streams every game unnecessarily
 - Clickable Yes/No bid and ask levels that populate a floating bottom order slip with the exact price, cash-at-risk field, fee-adjusted cap, and basic/iceberg/follow controls
 - Always-visible dashboard order monitor with working quantities and recent fills, plus immediate visual alerts for every newly streamed full or partial fill
+- Explicit, accessible side identities across the board, book, and slip: Away blue, Home purple, Over green, and Under amber
 - Sequence-checked in-memory order books with stale-book detection
 - Live browser stream for books, health, fills, orders, and positions
 - SQLite WAL persistence for schedules, mappings, settings, and audit records

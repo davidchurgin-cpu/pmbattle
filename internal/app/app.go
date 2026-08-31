@@ -656,6 +656,11 @@ func quoteForMarket(market domain.CanonicalMarket, yes bool) *domain.PriceQuote 
 	}
 	quote.Exchange = market.Exchange
 	quote.Ticker = market.ExchangeTicker
+	if yes {
+		quote.Side = "yes"
+	} else {
+		quote.Side = "no"
+	}
 	return &quote
 }
 
@@ -780,6 +785,7 @@ func simulatedQuote(price, quantity domain.Money, ticker, outcome string) *domai
 	quote.Exchange = "Kalshi"
 	quote.Ticker = ticker
 	quote.Outcome = outcome
+	quote.Side = "yes"
 	return &quote
 }
 

@@ -1,0 +1,69 @@
+:root {
+  --away: #1d4ed8;
+  --away-soft: #eff6ff;
+  --home: #7e22ce;
+  --home-soft: #faf5ff;
+  --over: #047857;
+  --over-soft: #ecfdf5;
+  --under: #b45309;
+  --under-soft: #fffbeb;
+}
+
+:root[data-theme="dark"] {
+  --away: #60a5fa;
+  --away-soft: #152748;
+  --home: #c084fc;
+  --home-soft: #2e1a40;
+  --over: #34d399;
+  --over-soft: #12382d;
+  --under: #fbbf24;
+  --under-soft: #3b2a10;
+}
+
+.market button.side-away { border-left: 3px solid var(--away); }
+.market button.side-home { border-left: 3px solid var(--home); }
+.market button.side-over { border-left: 3px solid var(--over); }
+.market button.side-under { border-left: 3px solid var(--under); }
+
+.market button.side-away:hover, .market button.side-away.selected { border-color: var(--away); background: var(--away-soft); }
+.market button.side-home:hover, .market button.side-home.selected { border-color: var(--home); background: var(--home-soft); }
+.market button.side-over:hover, .market button.side-over.selected { border-color: var(--over); background: var(--over-soft); }
+.market button.side-under:hover, .market button.side-under.selected { border-color: var(--under); background: var(--under-soft); }
+
+.side-tag {
+  font-size: 7px;
+  font-style: normal;
+  font-weight: 700;
+  letter-spacing: .04em;
+  line-height: 1;
+}
+
+.side-away .side-tag { color: var(--away); }
+.side-home .side-tag { color: var(--home); }
+.side-over .side-tag { color: var(--over); }
+.side-under .side-tag { color: var(--under); }
+
+.selection-role {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: .04em;
+}
+
+.role-away .selection-role { background: var(--away-soft); color: var(--away); }
+.role-home .selection-role { background: var(--home-soft); color: var(--home); }
+.role-over .selection-role { background: var(--over-soft); color: var(--over); }
+.role-under .selection-role { background: var(--under-soft); color: var(--under); }
+.book-market-title.role-away, .order-slip header.role-away { border-left: 4px solid var(--away); }
+.book-market-title.role-home, .order-slip header.role-home { border-left: 4px solid var(--home); }
+.book-market-title.role-over, .order-slip header.role-over { border-left: 4px solid var(--over); }
+.book-market-title.role-under, .order-slip header.role-under { border-left: 4px solid var(--under); }
+.book-market-title[class*="role-"] { padding-left: 9px; }
+.book-center.role-away b { color: var(--away); }
+.book-center.role-home b { color: var(--home); }
+.book-center.role-over b { color: var(--over); }
+.book-center.role-under b { color: var(--under); }

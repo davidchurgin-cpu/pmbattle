@@ -101,6 +101,9 @@ func TestAttachMatchedBuildsLiveSportsbookMarkets(t *testing.T) {
 	if views[2].Line != "52.5" || views[2].Over == nil || views[2].Under == nil {
 		t.Fatalf("unexpected total %+v", views[2])
 	}
+	if views[1].Away.Side != "no" || views[1].Home.Side != "yes" || views[2].Over.Side != "yes" || views[2].Under.Side != "no" {
+		t.Fatalf("unexpected binary sides spread=%+v total=%+v", views[1], views[2])
+	}
 	if len(tickers) != 4 {
 		t.Fatalf("expected four selected tickers, got %v", tickers)
 	}
