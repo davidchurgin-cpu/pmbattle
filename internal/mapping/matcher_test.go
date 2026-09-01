@@ -62,6 +62,30 @@ func TestMatchRejectsAmbiguousDuplicateMatchups(t *testing.T) {
 	}
 }
 
+func TestMatchUsesClearlyCloserOccurrenceForDailyBaseballSeries(t *testing.T) {
+	occurrence := time.Date(2026, 9, 2, 4, 40, 0, 0, time.UTC)
+	events := []domain.CanonicalEvent{
+		{ID: "959", StartTime: occurrence.Add(-3 * time.Hour), Participants: []domain.Participant{{Name: "Philadelphia Phillies"}, {Name: "Arizona Diamondbacks"}}},
+		{ID: "905", StartTime: occurrence.Add(15 * time.Hour), Participants: []domain.Participant{{Name: "Philadelphia Phillies"}, {Name: "Arizona Diamondbacks"}}},
+	}
+	matched := Match(events, []domain.CanonicalMarket{{Title: "Philadelphia vs Arizona", OccurrenceTime: occurrence}})
+	if matched[0].EventID != "959" || matched[0].MappingStatus != "accepted" {
+		t.Fatalf("clearly closer daily game was not selected: %+v", matched[0])
+	}
+}
+
+func TestMatchKeepsCloseDoubleheaderInReview(t *testing.T) {
+	occurrence := time.Date(2026, 9, 2, 18, 0, 0, 0, time.UTC)
+	events := []domain.CanonicalEvent{
+		{ID: "game-1", StartTime: occurrence.Add(-2 * time.Hour), Participants: []domain.Participant{{Name: "Chicago Cubs"}, {Name: "St. Louis Cardinals"}}},
+		{ID: "game-2", StartTime: occurrence.Add(2 * time.Hour), Participants: []domain.Participant{{Name: "Chicago Cubs"}, {Name: "St. Louis Cardinals"}}},
+	}
+	matched := Match(events, []domain.CanonicalMarket{{Title: "Chicago C vs St. Louis", OccurrenceTime: occurrence}})
+	if matched[0].EventID != "" || matched[0].MappingStatus != "review" {
+		t.Fatalf("close doubleheader should remain ambiguous: %+v", matched[0])
+	}
+}
+
 func TestMatchHandlesCommonScheduleAndKalshiTeamAliases(t *testing.T) {
 	tests := []struct {
 		away  string

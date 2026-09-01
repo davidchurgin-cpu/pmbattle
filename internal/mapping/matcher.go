@@ -21,7 +21,7 @@ func Match(events []domain.CanonicalEvent, markets []domain.CanonicalMarket) []d
 		bestID, bestScore := "", 0
 		if len(candidates) > 0 {
 			bestScore = candidates[0].Score
-			if len(candidates) == 1 || candidates[1].Score < bestScore {
+			if len(candidates) == 1 || candidates[1].Score < bestScore || clearlyCloserOccurrence(candidates[0], candidates[1], result[i].OccurrenceTime) {
 				bestID = candidates[0].EventID
 			}
 		}
@@ -60,11 +60,35 @@ func Candidates(events []domain.CanonicalEvent, market domain.CanonicalMarket) [
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].Score == candidates[j].Score {
+			if !market.OccurrenceTime.IsZero() {
+				left, right := timeDistance(candidates[i].StartTime, market.OccurrenceTime), timeDistance(candidates[j].StartTime, market.OccurrenceTime)
+				if left != right {
+					return left < right
+				}
+			}
 			return candidates[i].StartTime.Before(candidates[j].StartTime)
 		}
 		return candidates[i].Score > candidates[j].Score
 	})
 	return candidates
+}
+
+// clearlyCloserOccurrence resolves repeat matchups on consecutive days without
+// guessing on doubleheaders. A six-hour advantage is decisive for daily games,
+// while closely spaced same-day candidates stay in manual review.
+func clearlyCloserOccurrence(first, second domain.MappingCandidate, occurrence time.Time) bool {
+	if occurrence.IsZero() || first.StartTime.IsZero() || second.StartTime.IsZero() || first.Score != second.Score {
+		return false
+	}
+	return timeDistance(second.StartTime, occurrence)-timeDistance(first.StartTime, occurrence) >= 6*time.Hour
+}
+
+func timeDistance(left, right time.Time) time.Duration {
+	difference := left.Sub(right)
+	if difference < 0 {
+		return -difference
+	}
+	return difference
 }
 
 func matchupScore(event domain.CanonicalEvent, title string) int {
