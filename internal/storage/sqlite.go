@@ -14,7 +14,12 @@ import (
 type Store struct{ db *sql.DB }
 
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// database/sql keeps a pool of connections and a PRAGMA only applies to
+	// the connection it ran on, so busy_timeout and WAL are set through the
+	// DSN to reach every connection. _txlock=immediate makes write
+	// transactions take the lock up front instead of failing with SQLITE_BUSY
+	// when two writers (schedule save, exchange restart) overlap.
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}

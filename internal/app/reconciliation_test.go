@@ -24,6 +24,8 @@ type appFakeAdapter struct {
 	marketCalls       int
 	snapshotPositions []domain.Position
 	settlements       []domain.Settlement
+	balance           domain.Money
+	beforeSnapshot    func()
 }
 
 func (f *appFakeAdapter) Name() string { return "fake" }
@@ -37,10 +39,21 @@ func (f *appFakeAdapter) SubscribeAccount(context.Context) (*exchange.Subscripti
 func (f *appFakeAdapter) SubscribeBooks(context.Context, []string) (*exchange.Subscription, error) {
 	return nil, nil
 }
-func (f *appFakeAdapter) Snapshot(context.Context) ([]domain.Order, []domain.Position, []domain.Fill, error) {
+func (f *appFakeAdapter) Snapshot(ctx context.Context) ([]domain.Order, []domain.Position, []domain.Fill, error) {
+	if f.beforeSnapshot != nil {
+		f.beforeSnapshot()
+	}
+	if ctx.Err() != nil {
+		return nil, nil, nil, ctx.Err()
+	}
 	return nil, f.snapshotPositions, nil, nil
 }
-func (f *appFakeAdapter) Balance(context.Context) (domain.Money, error) { return 0, nil }
+func (f *appFakeAdapter) Balance(ctx context.Context) (domain.Money, error) {
+	if ctx.Err() != nil {
+		return 0, ctx.Err()
+	}
+	return f.balance, nil
+}
 func (f *appFakeAdapter) Fills(context.Context, []string) ([]domain.Fill, error) {
 	return nil, nil
 }
@@ -386,5 +399,62 @@ func TestMarketCatalogRefreshPublishesNewListingsAndClearsWithdrawnViews(t *test
 	snapshot = service.Snapshot()
 	if adapter.marketCalls != 2 || snapshot.Health.MappedMarkets != 0 || len(snapshot.Events[0].Markets) != 0 || len(service.allEvents[0].Markets) != 0 {
 		t.Fatalf("withdrawn catalog remained visible: calls=%d health=%+v event=%+v all=%+v", adapter.marketCalls, snapshot.Health, snapshot.Events[0], service.allEvents[0])
+	}
+}
+
+func TestInterruptedReconciliationKeepsPriorAccountStateAndStaysSilent(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "interrupted.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	adapter := &appFakeAdapter{balance: 250 * domain.Dollar, beforeSnapshot: cancel}
+	service := New(Config{ExchangeEnvironment: "production"}, store, adapter)
+	service.snapshot.Bankroll = 500 * domain.Dollar
+	service.snapshot.Health.AccountState = "ready"
+	events, unsubscribe := service.Subscribe()
+	defer unsubscribe()
+
+	// The restart cancels the context after the balance call but before the
+	// positions call, exactly the window a preferences save hits.
+	service.reconcileAccount(ctx, true)
+	select {
+	case event := <-events:
+		t.Fatalf("interrupted reconcile published %q", event.Type)
+	default:
+	}
+	snapshot := service.Snapshot()
+	if snapshot.Health.AccountState != "ready" {
+		t.Fatalf("account state %q, want the prior ready state", snapshot.Health.AccountState)
+	}
+	if snapshot.Bankroll != 250*domain.Dollar {
+		t.Fatalf("bankroll %d; the successful balance read before the interruption should stand", snapshot.Bankroll)
+	}
+
+	// An already-canceled context must not even flip the state to syncing.
+	service.reconcileAccount(ctx, true)
+	if service.Snapshot().Health.AccountState != "ready" {
+		t.Fatal("pre-canceled reconcile changed account state")
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("pre-canceled reconcile published %q", event.Type)
+	default:
+	}
+
+	// A fresh context completes and publishes normally.
+	service.reconcileAccount(context.Background(), true)
+	if got := service.Snapshot().Health.AccountState; got != "ready" {
+		t.Fatalf("fresh reconcile ended in state %q", got)
+	}
+	sawSnapshot := false
+	for len(events) > 0 {
+		if (<-events).Type == "account_snapshot" {
+			sawSnapshot = true
+		}
+	}
+	if !sawSnapshot {
+		t.Fatal("fresh reconcile did not publish an account snapshot")
 	}
 }

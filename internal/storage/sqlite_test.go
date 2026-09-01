@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,5 +157,42 @@ func TestMappingReviewsAndOverridesRoundTrip(t *testing.T) {
 	got, _ = store.LoadMappingReviews(ctx, 10)
 	if len(got) != 0 {
 		t.Fatalf("review replacement did not clear queue: %+v", got)
+	}
+}
+
+func TestConcurrentWritersDoNotHitSQLiteBusy(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "busy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	errs := make(chan error, 64)
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for i := 0; i < 25; i++ {
+				event := domain.CanonicalEvent{ID: "event", StartTime: time.Now().UTC(), Participants: []domain.Participant{{Rotation: "1", Name: "A"}, {Rotation: "2", Name: "B"}}}
+				if err := store.SaveEvents(ctx, []domain.CanonicalEvent{event}); err != nil {
+					errs <- err
+					return
+				}
+				if err := store.SaveMapping(ctx, domain.CanonicalMarket{Exchange: "kalshi", ExchangeTicker: "T", EventID: "event", MappingStatus: "accepted"}); err != nil {
+					errs <- err
+					return
+				}
+				if err := store.Audit(ctx, "concurrency", map[string]int{"worker": worker, "i": i}); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(worker)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent write failed: %v", err)
 	}
 }

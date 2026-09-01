@@ -814,8 +814,12 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 	if s.exchange == nil {
 		return
 	}
-	s.refreshExchangeMarkets(ctx, false)
+	// Balance and positions first: they are quick and the browser shows them
+	// immediately. Market discovery can take a while and a restart (for
+	// example after saving preferences) must not leave the account panel
+	// waiting on it.
 	s.reconcileAccount(ctx, false)
+	s.refreshExchangeMarkets(ctx, false)
 	accountTicker := time.NewTicker(30 * time.Second)
 	defer accountTicker.Stop()
 	backoff := time.Second
@@ -983,19 +987,43 @@ func buildMappingReviews(events []domain.CanonicalEvent, markets []domain.Canoni
 }
 
 func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
+	if ctx.Err() != nil {
+		return
+	}
 	s.mu.Lock()
+	previousState := s.snapshot.Health.AccountState
 	s.snapshot.Health.AccountState = "syncing"
 	s.mu.Unlock()
+	// A reconcile interrupted by shutdown or an exchange-loop restart must
+	// not publish half-finished state or mark the account degraded; the
+	// replacement loop reconciles again immediately.
+	interrupted := func() bool {
+		if ctx.Err() == nil {
+			return false
+		}
+		s.mu.Lock()
+		s.snapshot.Health.AccountState = previousState
+		s.mu.Unlock()
+		return true
+	}
 	accountOK := true
 	if balance, balanceErr := s.exchange.Balance(ctx); balanceErr != nil {
+		if interrupted() {
+			return
+		}
 		slog.Warn("balance reconciliation failed", "error", balanceErr)
 		accountOK = false
+	} else if interrupted() {
+		return
 	} else {
 		s.mu.Lock()
 		s.snapshot.Bankroll = balance
 		s.mu.Unlock()
 	}
 	orders, positions, fills, err := s.exchange.Snapshot(ctx)
+	if interrupted() {
+		return
+	}
 	if err != nil {
 		slog.Warn("account reconciliation failed", "error", err)
 		accountOK = false
