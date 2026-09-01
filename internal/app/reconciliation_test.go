@@ -20,13 +20,16 @@ type appFakeAdapter struct {
 	amended           []exchange.AmendOrderRequest
 	canceled          []string
 	failCancel        string
+	markets           []domain.CanonicalMarket
+	marketCalls       int
 	snapshotPositions []domain.Position
 	settlements       []domain.Settlement
 }
 
 func (f *appFakeAdapter) Name() string { return "fake" }
 func (f *appFakeAdapter) ListMarkets(context.Context, []domain.CanonicalEvent) ([]domain.CanonicalMarket, error) {
-	return nil, nil
+	f.marketCalls++
+	return append([]domain.CanonicalMarket(nil), f.markets...), nil
 }
 func (f *appFakeAdapter) SubscribeAccount(context.Context) (*exchange.Subscription, error) {
 	return nil, nil
@@ -341,5 +344,47 @@ func TestResumeFollowRefusesStaleBookBeforeEngineStateChanges(t *testing.T) {
 	current, ok := service.orderEngine.Parent(parent.ID)
 	if !ok || current.Status != "paused" {
 		t.Fatalf("stale resume changed engine state: %+v", current)
+	}
+}
+
+func TestMarketCatalogRefreshPublishesNewListingsAndClearsWithdrawnViews(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	start := time.Date(2026, 9, 5, 19, 30, 0, 0, time.UTC)
+	event := domain.CanonicalEvent{ID: "219", Sport: "football", League: "college football", StartTime: start, Participants: []domain.Participant{{Name: "Clemson"}, {Name: "LSU"}}}
+	adapter := &appFakeAdapter{markets: []domain.CanonicalMarket{
+		{Exchange: "fake", ExchangeTicker: "CLEM", Type: domain.MarketMoneyline, Title: "Clemson vs LSU", Outcome: "Clemson", OccurrenceTime: start, YesBid: 2200, YesAsk: 2300, YesAskSize: 25 * domain.Dollar},
+		{Exchange: "fake", ExchangeTicker: "LSU", Type: domain.MarketMoneyline, Title: "Clemson vs LSU", Outcome: "LSU", OccurrenceTime: start, YesBid: 7700, YesAsk: 7800, YesAskSize: 20 * domain.Dollar},
+	}}
+	service := New(Config{}, store, adapter)
+	service.allEvents = []domain.CanonicalEvent{event}
+	service.snapshot.Events = []domain.CanonicalEvent{event}
+	events, cancel := service.Subscribe()
+	defer cancel()
+	service.refreshExchangeMarkets(context.Background(), true)
+	first, update := <-events, <-events
+	if first.Type != "health" || update.Type != "schedule" {
+		t.Fatalf("catalog refresh published %q then %q, want health then schedule", first.Type, update.Type)
+	}
+	snapshot := service.Snapshot()
+	if adapter.marketCalls != 1 || snapshot.Health.MappedMarkets != 2 || len(snapshot.Events[0].Markets) != 1 || snapshot.Events[0].Markets[0].Away == nil || snapshot.Events[0].Markets[0].Home == nil {
+		t.Fatalf("new catalog was not attached: calls=%d health=%+v event=%+v", adapter.marketCalls, snapshot.Health, snapshot.Events[0])
+	}
+	if len(service.allEvents[0].Markets) != 1 {
+		t.Fatalf("unfiltered catalog did not receive live views: %+v", service.allEvents[0])
+	}
+
+	adapter.markets = nil
+	service.refreshExchangeMarkets(context.Background(), true)
+	first, update = <-events, <-events
+	if first.Type != "health" || update.Type != "schedule" {
+		t.Fatalf("catalog withdrawal published %q then %q, want health then schedule", first.Type, update.Type)
+	}
+	snapshot = service.Snapshot()
+	if adapter.marketCalls != 2 || snapshot.Health.MappedMarkets != 0 || len(snapshot.Events[0].Markets) != 0 || len(service.allEvents[0].Markets) != 0 {
+		t.Fatalf("withdrawn catalog remained visible: calls=%d health=%+v event=%+v all=%+v", adapter.marketCalls, snapshot.Health, snapshot.Events[0], service.allEvents[0])
 	}
 }

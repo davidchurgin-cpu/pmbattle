@@ -146,3 +146,28 @@ func TestResumeEndpointIsLockedInProduction(t *testing.T) {
 		t.Fatalf("status %d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
 	}
 }
+
+func TestIndividualCancelEndpointIsLockedInProduction(t *testing.T) {
+	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
+	request := httptest.NewRequest(http.MethodDelete, "/api/parent-orders/parent-1", nil)
+	response := httptest.NewRecorder()
+	New(service, nil).Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
+	}
+}
+
+func TestSecurityHeadersAndCrossOriginWebSocketRejection(t *testing.T) {
+	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
+	handler := New(service, nil).Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+	if response.Header().Get("Content-Security-Policy") == "" || response.Header().Get("X-Content-Type-Options") != "nosniff" || response.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("security headers missing: %+v", response.Header())
+	}
+	request := httptest.NewRequest(http.MethodGet, "http://station.local/api/ws", nil)
+	request.Header.Set("Origin", "https://attacker.example")
+	if sameOrigin(request) {
+		t.Fatal("cross-origin websocket request was accepted")
+	}
+}

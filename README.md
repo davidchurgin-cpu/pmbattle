@@ -126,7 +126,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - The UI clearly identifies simulated/live mode and stale data.
 - Kalshi's `balance` is treated as available trading cash, not total account equity. Account orders, positions, settlements, and available cash are reconciled every 30 seconds while connected, as well as at startup and after reconnects.
 - Credentials never pass through the browser.
-- The server enforces same-origin browser WebSockets and basic security headers.
+- The server enforces same-origin browser WebSockets, a restrictive content security policy, MIME sniffing protection, referrer suppression, and frame denial.
 - The production API and exchange adapter cannot place, amend, or cancel orders. PMBattle must not send any real-money order action without the user's explicit permission at that time.
 - Demo order submission remains off unless `PMBATTLE_TRADING_ENABLED=true` is deliberately supplied with demo credentials. The engine rejects stale books, unknown mappings, invalid sides, requests above $20,000 cash risk, unsupported strategies, and prices beyond the fee-adjusted cap.
 - Parent creation is serialized under one server lock. The full parent target must fit available Kalshi cash after subtracting unexposed commitments already reserved for managed iceberg/follow parents; a rejected target never reaches the adapter.
