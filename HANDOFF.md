@@ -41,6 +41,31 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 ha
 
 Mutation routes are inert by default. Set `PMBATTLE_SIMULATED=false`, choose `PMBATTLE_KALSHI_ENV=demo` or `production`, and set `PMBATTLE_TRADING_ENABLED=true` to enable them. The Kalshi client receives the same startup flag and independently rejects place, amend, and cancel calls when it is off. Production submissions receive an explicit browser confirmation and are labeled `REAL ORDERS` / `LIVE TRADING`.
 
+## Running the project
+
+From a fresh clone, install and embed the browser app, then build the Go server:
+
+```text
+cd web
+npm ci
+npm run build
+cd ..
+go build -o pmbattle.exe .
+```
+
+For Windows PowerShell production testing, configure the machine-local credentials and start the executable:
+
+```powershell
+$env:PMBATTLE_KALSHI_ENV = "production"
+$env:PMBATTLE_KALSHI_KEY_ID = "your-key-id"
+$env:PMBATTLE_KALSHI_PRIVATE_KEY_PATH = "C:\secure\kalshi-private-key.pem"
+$env:PMBATTLE_SIMULATED = "false"
+$env:PMBATTLE_TRADING_ENABLED = "true"
+.\pmbattle.exe
+```
+
+Open `http://127.0.0.1:8080/`. Use `PMBATTLE_TRADING_ENABLED=false` for read-only operation. Credentials and private keys stay outside Git and must be configured separately on every computer. Linux uses the same environment names and `go build -o pmbattle .`; portable Windows/Linux artifacts are also published by GitHub Actions.
+
 ## Important operational details
 
 - The office server's existing IP allowlist remains the access boundary. PMBattle should sit behind its normal TLS/reverse-proxy setup.
@@ -55,7 +80,7 @@ Mutation routes are inert by default. Set `PMBATTLE_SIMULATED=false`, choose `PM
 - Accepted and rejected decisions are stored in a separate override table, survive catalog refreshes/restarts, are applied before tradable books are attached, and create an immutable `mapping_review_decided` audit record. Accepting or rejecting never calls an exchange mutation endpoint.
 - Main spread and total lines are selected from the active strike closest to a 50% midpoint. Up to five nearby strikes are retained for the inline line selector.
 - Clicking a game expands its order book in place. The consolidated book stream contains the selected UI ticker plus the unique tickers required by active follow parents; changing or closing the dropdown never stops a working follow strategy. All unrelated books remain unloaded. The authenticated account stream remains independent and continuously connected.
-- The Yes and No tabs are real views of the same binary book: the No ladder is derived by complementing the synchronized Yes-price book. Clicking any bid or ask copies its exact side and price into the floating order slip. Submission stays disabled on the running production connection.
+- The Yes and No tabs are real views of the same binary book: the No ladder is derived by complementing the synchronized Yes-price book. Clicking any bid or ask copies its exact side and price into the floating order slip. Submission follows the server's startup trading setting.
 - The bottom activity dock remains fixed while the user searches, scrolls, or changes markets. Its collapsed bar always shows positions, working orders, unread fills, history, and last-fill state; it expands upward into the existing detail tables. Each new WebSocket fill produces a 12-second visual alert and unread count; snapshot/replayed fill IDs are suppressed.
 - The board deliberately distinguishes `Not listed` (no safely matched Kalshi contract for that market type) from `Listed · no offer` (a mapped contract exists but has no usable ask). Neither state can open an order slip.
 - Market discovery reruns independently every `PMBATTLE_MARKET_INTERVAL` (five minutes by default), reapplies saved mapping decisions, replaces stale board views, and publishes the refreshed schedule. A mutex prevents overlapping reconnect and timer refreshes.
@@ -93,7 +118,7 @@ Mutation routes are inert by default. Set `PMBATTLE_SIMULATED=false`, choose `PM
 - Kalshi live order authentication and on-demand book streaming have been validated read-only against a production account. The September 1, 2026 refresh mapped 2,244 of 4,760 discovered contracts into 514 selectable game/strike books; a requested Clemson order book synchronized with full depth and the production order button remained disabled.
 - The same live validation restored both moneyline sides for Clemson-LSU, Wisconsin-Notre Dame, UL Monroe-Mississippi State, UNLV-Hawaii, and UCLA-California. Of 86 enabled games, 63 currently have at least one mapped Kalshi moneyline; 23 have no mapped market. UCLA-California has no Kalshi spread or total event in the current catalog, so those cells correctly display `Not listed`.
 - Initial league-to-series routing covers the major US leagues plus selected top soccer leagues. Add aliases as new schedule leagues are enabled; unknown leagues intentionally load no Kalshi series.
-- The current general Kalshi fee rule is versioned in one module, but market-specific fee exceptions must be added before any production order preview.
+- The current general Kalshi fee rule is versioned in one module. Market-specific fee exceptions remain a known follow-up and must be verified during manual testing.
 - Follow has automated coverage with a fake demo adapter and the current V2 amend contract, but it has not yet been manually exercised with separate Kalshi demo credentials. Production remains hard locked.
 - The shared-bankroll gate is process-local and currently covers the single Kalshi adapter. The pure multi-exchange allocation planner is implemented and tested, but live routing still needs a second adapter plus the execution coordinator that creates children and resizes/cancels competing orders as fills arrive. Do not infer live smart routing from the planner alone.
 - Completed parents are retained in SQLite without pruning yet. A retention policy will be needed as history grows.
