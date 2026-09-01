@@ -354,6 +354,66 @@ func (c *Client) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequ
 	return order, nil
 }
 
+func (c *Client) AmendOrder(ctx context.Context, request exchange.AmendOrderRequest) (domain.Order, error) {
+	if !strings.EqualFold(c.cfg.Environment, "demo") {
+		return domain.Order{}, errors.New("kalshi order mutation is locked outside the demo environment")
+	}
+	if c.key == nil || c.cfg.KeyID == "" {
+		return domain.Order{}, errors.New("kalshi order amendment requires API credentials")
+	}
+	if strings.TrimSpace(request.OrderID) == "" || strings.TrimSpace(request.Ticker) == "" || request.Quantity <= 0 || request.LimitPrice <= 0 || request.LimitPrice >= domain.Dollar {
+		return domain.Order{}, errors.New("kalshi amend order request is invalid")
+	}
+	if request.OutcomeSide != "yes" && request.OutcomeSide != "no" {
+		return domain.Order{}, errors.New("kalshi outcome side must be yes or no")
+	}
+	price := request.LimitPrice
+	bookSide := "bid"
+	if request.OutcomeSide == "no" {
+		bookSide = "ask"
+		price = domain.Dollar - request.LimitPrice
+	}
+	payload := struct {
+		Ticker               string `json:"ticker"`
+		Side                 string `json:"side"`
+		Price                string `json:"price"`
+		Count                string `json:"count"`
+		ClientOrderID        string `json:"client_order_id,omitempty"`
+		UpdatedClientOrderID string `json:"updated_client_order_id,omitempty"`
+		ExchangeIndex        int    `json:"exchange_index"`
+	}{
+		Ticker: request.Ticker, Side: bookSide, Price: fixed.Format(price), Count: fixed.Format(request.Quantity),
+		ClientOrderID: request.ClientOrderID, UpdatedClientOrderID: request.UpdatedClientOrderID, ExchangeIndex: -1,
+	}
+	var response struct {
+		OrderID       string `json:"order_id"`
+		ClientOrderID string `json:"client_order_id"`
+		Remaining     string `json:"remaining_count"`
+		TimestampMS   int64  `json:"ts_ms"`
+	}
+	path := "/portfolio/events/orders/" + url.PathEscape(request.OrderID) + "/amend"
+	if err := c.doJSON(ctx, http.MethodPost, path, payload, &response, http.StatusOK); err != nil {
+		return domain.Order{}, err
+	}
+	orderID := response.OrderID
+	if orderID == "" {
+		orderID = request.OrderID
+	}
+	status := "resting"
+	remaining, _ := fixed.Parse(response.Remaining)
+	if remaining == 0 && response.Remaining != "" {
+		status = "filled"
+	}
+	created := time.Now().UTC()
+	if response.TimestampMS > 0 {
+		created = time.UnixMilli(response.TimestampMS).UTC()
+	}
+	return domain.Order{
+		ID: orderID, Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide,
+		Status: status, Quantity: request.Quantity, LimitPrice: request.LimitPrice, CreatedAt: created,
+	}, nil
+}
+
 func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
 	if !strings.EqualFold(c.cfg.Environment, "demo") {
 		return errors.New("kalshi order mutation is locked outside the demo environment")

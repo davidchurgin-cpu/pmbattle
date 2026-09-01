@@ -12,7 +12,10 @@ import (
 	"github.com/davidchurgin-cpu/pmbattle/internal/storage"
 )
 
-type appFakeAdapter struct{ placed []exchange.PlaceOrderRequest }
+type appFakeAdapter struct {
+	placed  []exchange.PlaceOrderRequest
+	amended []exchange.AmendOrderRequest
+}
 
 func (f *appFakeAdapter) Name() string { return "fake" }
 func (f *appFakeAdapter) ListMarkets(context.Context, []domain.CanonicalEvent) ([]domain.CanonicalMarket, error) {
@@ -34,6 +37,10 @@ func (f *appFakeAdapter) Fills(context.Context, []string) ([]domain.Fill, error)
 func (f *appFakeAdapter) PlaceOrder(_ context.Context, request exchange.PlaceOrderRequest) (domain.Order, error) {
 	f.placed = append(f.placed, request)
 	return domain.Order{ID: fmt.Sprintf("child-%d", len(f.placed)), Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide, Status: "resting", Quantity: request.Quantity, LimitPrice: request.LimitPrice}, nil
+}
+func (f *appFakeAdapter) AmendOrder(_ context.Context, request exchange.AmendOrderRequest) (domain.Order, error) {
+	f.amended = append(f.amended, request)
+	return domain.Order{ID: request.OrderID, Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide, Status: "resting", Quantity: request.Quantity, LimitPrice: request.LimitPrice}, nil
 }
 func (f *appFakeAdapter) CancelOrder(context.Context, string) error { return nil }
 
@@ -105,5 +112,47 @@ func TestIcebergRefreshPublishesParentAndChildBeforeFill(t *testing.T) {
 	snapshot := service.Snapshot()
 	if len(adapter.placed) != 2 || len(snapshot.ParentOrders) != 1 || len(snapshot.ParentOrders[0].Children) != 2 || len(snapshot.Orders) != 2 {
 		t.Fatalf("iceberg refresh was not captured: placements=%d parent=%+v orders=%+v", len(adapter.placed), snapshot.ParentOrders, snapshot.Orders)
+	}
+}
+
+func TestFollowUsesServerBookAndRepricesBeforeBookPublication(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "follow.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter := &appFakeAdapter{}
+	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, adapter)
+	quote, err := pricing.Quote(5000, 100*domain.Dollar, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote.Ticker, quote.Side, quote.Outcome = "TEST", "yes", "Team A"
+	service.snapshot.Events = []domain.CanonicalEvent{{ID: "event-1", Participants: []domain.Participant{{Rotation: "451", Name: "Team A"}, {Rotation: "452", Name: "Team B"}}, Markets: []domain.MarketView{{Type: domain.MarketMoneyline, Away: &quote, Status: "open"}}}}
+	service.availableBooks["TEST"] = true
+	service.books.Snapshot(domain.OrderBook{Ticker: "TEST", Sequence: 1, Yes: []domain.BookLevel{{Price: 5200, Quantity: 50 * domain.Dollar}}, No: []domain.BookLevel{{Price: 5400, Quantity: 50 * domain.Dollar}}})
+	events, cancel := service.Subscribe()
+	defer cancel()
+	parent, err := service.CreateParentOrder(context.Background(), CreateParentOrderInput{EventID: "event-1", Ticker: "TEST", Side: "yes", Strategy: "follow", Policy: "limit", CashRisk: 100 * domain.Dollar, PriceCapMoneyline: -300, LimitPrice: 4000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.LimitPrice != 5200 || parent.Policy != "post_only" || len(adapter.placed) != 1 || adapter.placed[0].LimitPrice != 5200 || !adapter.placed[0].PostOnly {
+		t.Fatalf("follow trusted stale slip instead of server book: parent=%+v placed=%+v", parent, adapter.placed)
+	}
+	<-events
+	<-events
+	service.handleExchangeEvent(domain.StreamEvent{Type: "orderbook", Data: domain.OrderBook{Ticker: "TEST", Sequence: 2, Yes: []domain.BookLevel{{Price: 5300, Quantity: 40 * domain.Dollar}}, No: []domain.BookLevel{{Price: 5500, Quantity: 40 * domain.Dollar}}}})
+	first, second, third := <-events, <-events, <-events
+	if first.Type != "parent_order" || second.Type != "order" || third.Type != "orderbook" {
+		t.Fatalf("follow browser event order = %q, %q, %q", first.Type, second.Type, third.Type)
+	}
+	snapshot := service.Snapshot()
+	if len(adapter.amended) != 1 || adapter.amended[0].LimitPrice != 5300 || snapshot.ParentOrders[0].ReplaceCount != 1 || snapshot.ParentOrders[0].FilledRisk+snapshot.ParentOrders[0].ReservedRisk > snapshot.ParentOrders[0].CashRiskTarget {
+		t.Fatalf("follow reprice was not captured safely: amended=%+v parent=%+v", adapter.amended, snapshot.ParentOrders)
+	}
+	persisted, err := store.LoadParentOrders(context.Background())
+	if err != nil || len(persisted) != 1 || persisted[0].ReplaceCount != 1 {
+		t.Fatalf("follow parent was not persisted: %+v err=%v", persisted, err)
 	}
 }

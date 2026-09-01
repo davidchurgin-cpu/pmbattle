@@ -17,6 +17,8 @@ import (
 
 const MaxDemoCashRisk = 20_000 * domain.Dollar
 
+const FollowRepriceInterval = 750 * time.Millisecond
+
 var (
 	ErrDisabled            = errors.New("demo trading is disabled")
 	ErrUnsupportedStrategy = errors.New("strategy is not available in this demo release")
@@ -27,7 +29,15 @@ var (
 
 type Executor interface {
 	PlaceOrder(context.Context, exchange.PlaceOrderRequest) (domain.Order, error)
+	AmendOrder(context.Context, exchange.AmendOrderRequest) (domain.Order, error)
 	CancelOrder(context.Context, string) error
+}
+
+type FollowResult struct {
+	Parent  domain.ParentOrder
+	Order   *domain.Order
+	Changed bool
+	Err     error
 }
 
 type CreateRequest struct {
@@ -50,10 +60,11 @@ type Engine struct {
 	enabled bool
 	exec    Executor
 	parents map[string]domain.ParentOrder
+	now     func() time.Time
 }
 
 func New(enabled bool, executor Executor) *Engine {
-	return &Engine{enabled: enabled, exec: executor, parents: make(map[string]domain.ParentOrder)}
+	return &Engine{enabled: enabled, exec: executor, parents: make(map[string]domain.ParentOrder), now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (e *Engine) Restore(parents []domain.ParentOrder) {
@@ -98,15 +109,20 @@ func (e *Engine) Create(ctx context.Context, request CreateRequest) (domain.Pare
 	request.Strategy = strings.ToLower(strings.TrimSpace(request.Strategy))
 	request.Policy = strings.ToLower(strings.TrimSpace(request.Policy))
 	request.Side = strings.ToLower(strings.TrimSpace(request.Side))
-	if request.Strategy != "basic" && request.Strategy != "iceberg" {
+	if request.Strategy != "basic" && request.Strategy != "iceberg" && request.Strategy != "follow" {
 		return domain.ParentOrder{}, domain.Order{}, ErrUnsupportedStrategy
 	}
 	if request.Ticker == "" || request.EventID == "" || request.Outcome == "" || request.Market == "" || request.Side != "yes" && request.Side != "no" || request.LimitPrice <= 0 || request.LimitPrice >= domain.Dollar || request.CashRisk < domain.Dollar || request.CashRisk > MaxDemoCashRisk {
 		return domain.ParentOrder{}, domain.Order{}, ErrInvalidOrder
 	}
 	timeInForce, postOnly, ok := policy(request.Policy)
-	if !ok || request.Strategy == "iceberg" && request.Policy == "ioc" {
+	if !ok || (request.Strategy == "iceberg" || request.Strategy == "follow") && request.Policy == "ioc" {
 		return domain.ParentOrder{}, domain.Order{}, ErrInvalidOrder
+	}
+	if request.Strategy == "follow" {
+		timeInForce = "good_till_canceled"
+		postOnly = true
+		request.Policy = "post_only"
 	}
 	quantity, quote, err := QuantityForCashRisk(request.LimitPrice, request.CashRisk)
 	if err != nil || quantity <= 0 {
@@ -122,7 +138,7 @@ func (e *Engine) Create(ctx context.Context, request CreateRequest) (domain.Pare
 	if err != nil {
 		return domain.ParentOrder{}, domain.Order{}, err
 	}
-	now := time.Now().UTC()
+	now := e.now()
 	parent := domain.ParentOrder{
 		ID: id, Exchange: "Kalshi", EventID: request.EventID, Ticker: request.Ticker,
 		Rotation: request.Rotation, Outcome: request.Outcome, Market: request.Market, Side: request.Side,
@@ -152,6 +168,184 @@ func (e *Engine) Create(ctx context.Context, request CreateRequest) (domain.Pare
 	e.parents[parent.ID] = parent
 	e.mu.Unlock()
 	return parent, child, nil
+}
+
+// HandleBook advances all follow parents for one synchronized market. It joins
+// the best same-outcome bid, never crosses (amends remain post-only), enforces
+// the parent's fee-adjusted cap, and limits queue-losing price amendments.
+func (e *Engine) HandleBook(ctx context.Context, book domain.OrderBook) []FollowResult {
+	if !e.enabled || e.exec == nil {
+		return nil
+	}
+	e.mu.RLock()
+	ids := make([]string, 0)
+	for id, parent := range e.parents {
+		if parent.Strategy == "follow" && parent.Ticker == book.Ticker && !terminal(parent.Status) {
+			ids = append(ids, id)
+		}
+	}
+	e.mu.RUnlock()
+	results := make([]FollowResult, 0, len(ids))
+	for _, id := range ids {
+		if result := e.handleFollowParent(ctx, id, book); result.Changed || result.Err != nil {
+			results = append(results, result)
+		}
+	}
+	return results
+}
+
+func (e *Engine) handleFollowParent(ctx context.Context, parentID string, book domain.OrderBook) FollowResult {
+	e.mu.Lock()
+	parent, ok := e.parents[parentID]
+	if !ok || parent.Strategy != "follow" || terminal(parent.Status) || strategyStopped(parent.Status) {
+		e.mu.Unlock()
+		return FollowResult{}
+	}
+	if book.Stale {
+		if parent.Status != "paused_stale" {
+			parent.Status = "paused_stale"
+			parent.UpdatedAt = e.now()
+			e.parents[parentID] = parent
+			e.mu.Unlock()
+			return FollowResult{Parent: cloneParent(parent), Changed: true}
+		}
+		e.mu.Unlock()
+		return FollowResult{}
+	}
+	price, ok := bestFollowPrice(book, parent.Side)
+	if !ok {
+		if parent.Status != "waiting_for_book" {
+			parent.Status = "waiting_for_book"
+			parent.UpdatedAt = e.now()
+			e.parents[parentID] = parent
+			e.mu.Unlock()
+			return FollowResult{Parent: cloneParent(parent), Changed: true}
+		}
+		e.mu.Unlock()
+		return FollowResult{}
+	}
+	desiredRemaining, quote, sizingErr := QuantityForCashRisk(price, parent.RemainingRisk)
+	if sizingErr != nil || desiredRemaining <= 0 || !withinCap(quote.AllInMoneyline, parent.PriceCapMoneyline) {
+		if parent.Status != "price_capped" {
+			parent.Status = "price_capped"
+			parent.UpdatedAt = e.now()
+			e.parents[parentID] = parent
+			e.mu.Unlock()
+			return FollowResult{Parent: cloneParent(parent), Changed: true}
+		}
+		e.mu.Unlock()
+		return FollowResult{}
+	}
+	if price == parent.LimitPrice {
+		if parent.Status == "paused_stale" || parent.Status == "waiting_for_book" || parent.Status == "price_capped" {
+			parent.Status = "working"
+			parent.UpdatedAt = e.now()
+			e.parents[parentID] = parent
+			e.mu.Unlock()
+			return FollowResult{Parent: cloneParent(parent), Changed: true}
+		}
+		e.mu.Unlock()
+		return FollowResult{}
+	}
+	now := e.now()
+	if !parent.LastRepricedAt.IsZero() && now.Sub(parent.LastRepricedAt) < FollowRepriceInterval {
+		e.mu.Unlock()
+		return FollowResult{}
+	}
+	childIndex := activeChildIndex(parent)
+	if childIndex < 0 || !e.enabled || e.exec == nil {
+		parent.Status = "paused"
+		parent.UpdatedAt = now
+		e.parents[parentID] = parent
+		e.mu.Unlock()
+		return FollowResult{Parent: cloneParent(parent), Changed: true, Err: ErrDisabled}
+	}
+	child := parent.Children[childIndex]
+	updatedClientID, idErr := newID()
+	if idErr != nil {
+		parent.Status = "paused"
+		parent.UpdatedAt = now
+		e.parents[parentID] = parent
+		e.mu.Unlock()
+		return FollowResult{Parent: cloneParent(parent), Changed: true, Err: idErr}
+	}
+	request := exchange.AmendOrderRequest{
+		OrderID: child.ID, Ticker: parent.Ticker, OutcomeSide: parent.Side,
+		Quantity: child.FilledQuantity + desiredRemaining, LimitPrice: price,
+		ClientOrderID: child.ClientOrderID, UpdatedClientOrderID: updatedClientID,
+	}
+	parent.Status = "repricing"
+	parent.UpdatedAt = now
+	e.parents[parentID] = parent
+	e.mu.Unlock()
+
+	amended, err := e.exec.AmendOrder(ctx, request)
+	if err != nil {
+		e.mu.Lock()
+		parent = e.parents[parentID]
+		if !terminal(parent.Status) && !strategyStopped(parent.Status) {
+			parent.Status = "paused"
+			parent.UpdatedAt = e.now()
+		}
+		e.parents[parentID] = parent
+		e.mu.Unlock()
+		return FollowResult{Parent: cloneParent(parent), Changed: true, Err: err}
+	}
+	e.mu.Lock()
+	parent = e.parents[parentID]
+	childIndex = childIndexByID(parent, child.ID)
+	if childIndex < 0 {
+		parent.Status = "paused"
+		parent.UpdatedAt = e.now()
+		e.parents[parentID] = parent
+		e.mu.Unlock()
+		return FollowResult{Parent: cloneParent(parent), Changed: true, Err: errors.New("follow child disappeared during amendment")}
+	}
+	if terminal(parent.Status) || strategyStopped(parent.Status) || terminal(parent.Children[childIndex].Status) {
+		e.parents[parentID] = parent
+		e.mu.Unlock()
+		return FollowResult{Parent: cloneParent(parent), Changed: true}
+	}
+	if !terminal(parent.Children[childIndex].Status) {
+		parent.Children[childIndex].ClientOrderID = updatedClientID
+		parent.Children[childIndex].Quantity = request.Quantity
+		parent.Children[childIndex].Status = amended.Status
+		if parent.Children[childIndex].Status == "" {
+			parent.Children[childIndex].Status = "resting"
+		}
+		parent.Children[childIndex].UpdatedAt = e.now()
+	}
+	actualRemaining := request.Quantity - parent.Children[childIndex].FilledQuantity
+	if actualRemaining < 0 {
+		actualRemaining = 0
+	}
+	parent.Quantity = parent.FilledQuantity + actualRemaining
+	parent.LimitPrice = price
+	parent.ReservedRisk = quote.AllInCost
+	if parent.ReservedRisk > parent.RemainingRisk {
+		parent.ReservedRisk = parent.RemainingRisk
+	}
+	parent.Status = "working"
+	if parent.FilledQuantity > 0 {
+		parent.Status = "partially_filled"
+	}
+	parent.LastRepricedAt = e.now()
+	parent.ReplaceCount++
+	parent.UpdatedAt = parent.LastRepricedAt
+	e.parents[parentID] = parent
+	e.mu.Unlock()
+	amended.ID = child.ID
+	amended.Exchange = parent.Exchange
+	amended.Ticker = parent.Ticker
+	amended.Rotation = parent.Rotation
+	amended.Market = parent.Market
+	amended.Side = parent.Side
+	amended.Status = parent.Children[childIndex].Status
+	amended.Quantity = request.Quantity
+	amended.FilledQuantity = parent.Children[childIndex].FilledQuantity
+	amended.LimitPrice = price
+	amended.CashRisk = parent.ReservedRisk
+	return FollowResult{Parent: cloneParent(parent), Order: &amended, Changed: true}
 }
 
 func (e *Engine) Cancel(ctx context.Context, parentID string) (domain.ParentOrder, error) {
@@ -527,6 +721,44 @@ func activeChildIDs(parent domain.ParentOrder) []string {
 }
 
 func hasActiveChild(parent domain.ParentOrder) bool { return len(activeChildIDs(parent)) > 0 }
+
+func activeChildIndex(parent domain.ParentOrder) int {
+	for i := len(parent.Children) - 1; i >= 0; i-- {
+		if parent.Children[i].ID != "" && !terminal(parent.Children[i].Status) {
+			return i
+		}
+	}
+	return -1
+}
+
+func childIndexByID(parent domain.ParentOrder, childID string) int {
+	for i := range parent.Children {
+		if parent.Children[i].ID == childID {
+			return i
+		}
+	}
+	return -1
+}
+
+func bestFollowPrice(book domain.OrderBook, side string) (domain.Money, bool) {
+	if side == "yes" {
+		if len(book.Yes) == 0 || book.Yes[0].Price <= 0 || book.Yes[0].Price >= domain.Dollar {
+			return 0, false
+		}
+		return book.Yes[0].Price, true
+	}
+	if side == "no" {
+		if len(book.No) == 0 {
+			return 0, false
+		}
+		price := domain.Dollar - book.No[0].Price
+		if price <= 0 || price >= domain.Dollar {
+			return 0, false
+		}
+		return price, true
+	}
+	return 0, false
+}
 
 func childRiskExceeds(parent domain.ParentOrder, childID string) bool {
 	remaining := domain.Money(0)

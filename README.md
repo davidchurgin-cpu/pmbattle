@@ -2,7 +2,7 @@
 
 PMBattle is a fast, lightweight sportsbook-style terminal for prediction markets. It uses rotation numbers and the supplied sportsbook schedule as its event directory, then maps prediction-market contracts onto those games.
 
-The production connection is deliberately **read-only**. The terminal includes the live schedule, Kalshi market discovery and WebSocket plumbing, fee-adjusted American moneylines, live order books, fills, positions, orders, instant search, sport/date/league filters, and a compact light/dark interface. A disabled-by-default basic order path exists only for authenticated Kalshi demo testing; real-money order entry is blocked in both startup configuration and the exchange client.
+The production connection is deliberately **read-only**. The terminal includes the live schedule, Kalshi market discovery and WebSocket plumbing, fee-adjusted American moneylines, live order books, fills, positions, orders, instant search, sport/date/league filters, and a compact light/dark interface. Disabled-by-default basic, iceberg, and controlled follow paths exist only for authenticated Kalshi demo testing; real-money order entry is blocked in both startup configuration and the exchange client.
 
 ## What works now
 
@@ -14,10 +14,12 @@ The production connection is deliberately **read-only**. The terminal includes t
 - Moneyline, spread, and total columns in the simulated sportsbook board
 - Kalshi demo/production endpoints, RSA-PSS request signing, and authenticated WebSocket connection
 - Click-to-expand, full-depth inline order-book ladders with bids, asks, contracts, cash totals, and raw-to-fee-included moneylines
-- On-demand order-book subscriptions: PMBattle loads only the selected market, releases it when closed, and never streams every game unnecessarily
+- On-demand order-book subscriptions: PMBattle loads the selected market plus only the books required by active follow parents, releasing all other books
 - Clickable Yes/No bid and ask levels that populate a floating bottom order slip with the exact price, cash-at-risk field, fee-adjusted cap, and basic/iceberg/follow controls
 - Demo-only basic limit, post-only, IOC, and cancel commands sized from a parent cash-risk target with a hard fee-adjusted moneyline cap
 - Demo-only iceberg parents that expose one configurable slice, refresh only after the active slice is completely filled, and cancel only the currently working slice
+- Demo-only follow parents that join the live same-side top bid, stay post-only, never cross automatically, resize within cash risk, pause on stale data or the fee-adjusted cap, and throttle queue-losing amendments
+- Current Kalshi V2 amend requests use total/max-fillable count semantics and rotate the client order ID on every acknowledged reprice
 - Current Kalshi V2 fixed-point order requests, including correct NO-to-YES-book conversion and idempotent client order IDs
 - Durable parent orders that survive restart, deduplicate fills, and reduce remaining risk before fill notifications reach the browser
 - Order-scoped REST fill recovery after startup and account-stream reconnects, plus the authenticated read-only available bankroll
@@ -81,7 +83,7 @@ PMBATTLE_SIMULATED=false
 PMBATTLE_TRADING_ENABLED=false
 ```
 
-Demo and production credentials are different. Never commit private keys, `.env`, databases, or server secrets. `PMBATTLE_TRADING_ENABLED` defaults to `false`; if it is set to `true` outside authenticated, non-simulated Kalshi demo mode, PMBattle refuses to start. The Kalshi adapter independently rejects place and cancel mutations unless its configured environment is `demo`.
+Demo and production credentials are different. Never commit private keys, `.env`, databases, or server secrets. `PMBATTLE_TRADING_ENABLED` defaults to `false`; if it is set to `true` outside authenticated, non-simulated Kalshi demo mode, PMBattle refuses to start. The Kalshi adapter independently rejects place, amend, and cancel mutations unless its configured environment is `demo`.
 
 ### Using another PC
 
@@ -102,10 +104,11 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - Historical fills load quietly at startup; only new authenticated fill events create alerts, preventing notification spam after reconnects.
 - A partial fill remains counted as cash at risk while its open-order reservation is reduced; canceling the remainder does not erase the risk already held in the resulting position.
 - Iceberg refresh failures pause the parent without creating a phantom child. Duplicate fills cannot refresh twice, and fee-rounding changes shrink future quantity before allowing the parent to exceed its cash-risk target.
+- Follow decisions are driven by the synchronized server book, not a browser-supplied price. A 750 ms amendment cooldown limits queue loss; active follow books stay subscribed when their game dropdown is closed.
 - The UI clearly identifies simulated/live mode and stale data.
 - Credentials never pass through the browser.
 - The server enforces same-origin browser WebSockets and basic security headers.
-- The production API and exchange adapter cannot place, modify, or cancel orders. No real-money action should be enabled without a separate reviewed implementation and the user's explicit permission.
+- The production API and exchange adapter cannot place, amend, or cancel orders. PMBattle must not send any real-money order action without the user's explicit permission at that time.
 - Demo order submission remains off unless `PMBATTLE_TRADING_ENABLED=true` is deliberately supplied with demo credentials. The engine rejects stale books, unknown mappings, invalid sides, requests above $20,000 cash risk, unsupported strategies, and prices beyond the fee-adjusted cap.
 
 See [HANDOFF.md](HANDOFF.md) for architecture, operational details, known limitations, and the next implementation milestone.

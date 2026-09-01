@@ -82,6 +82,35 @@ func TestPlaceNoOrderUsesV2AskOnYesBook(t *testing.T) {
 	}
 }
 
+func TestAmendNoOrderUsesV2TotalCountAndYesBookAsk(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/portfolio/events/orders/order-1/amend" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["side"] != "ask" || body["price"] != "0.4400" || body["count"] != "10.0000" || body["client_order_id"] != "client-1" || body["updated_client_order_id"] != "client-2" || body["exchange_index"] != float64(-1) {
+			t.Fatalf("unexpected amend V2 body %#v", body)
+		}
+		_, _ = w.Write([]byte(`{"order_id":"order-1","client_order_id":"client-2","remaining_count":"8.0000","fill_count":"0.0000","ts_ms":1788206400000}`))
+	}))
+	defer server.Close()
+	client := &Client{cfg: Config{Environment: "demo", KeyID: "key-id"}, baseURL: server.URL, key: key, http: server.Client()}
+	order, err := client.AmendOrder(context.Background(), exchange.AmendOrderRequest{OrderID: "order-1", Ticker: "TEST", OutcomeSide: "no", Quantity: 10 * domain.Dollar, LimitPrice: 5600, ClientOrderID: "client-1", UpdatedClientOrderID: "client-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.ID != "order-1" || order.Side != "no" || order.LimitPrice != 5600 || order.Quantity != 10*domain.Dollar || order.Status != "resting" {
+		t.Fatalf("unexpected amended order %+v", order)
+	}
+}
+
 func TestProductionClientRefusesOrderMutation(t *testing.T) {
 	client := &Client{cfg: Config{Environment: "production"}}
 	if _, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{Ticker: "TEST", OutcomeSide: "yes", Quantity: domain.Dollar, LimitPrice: 5000}); err == nil {
@@ -89,6 +118,9 @@ func TestProductionClientRefusesOrderMutation(t *testing.T) {
 	}
 	if err := client.CancelOrder(context.Background(), "order-1"); err == nil {
 		t.Fatal("production cancellation was not locked")
+	}
+	if _, err := client.AmendOrder(context.Background(), exchange.AmendOrderRequest{OrderID: "order-1", Ticker: "TEST", OutcomeSide: "yes", Quantity: domain.Dollar, LimitPrice: 5000}); err == nil {
+		t.Fatal("production amendment was not locked")
 	}
 }
 

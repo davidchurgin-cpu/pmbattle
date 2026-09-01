@@ -22,6 +22,18 @@ type PlaceOrderRequest struct {
 	ClientOrderID string
 }
 
+// AmendOrderRequest uses the exchange's total/max-fillable quantity. Quantity
+// therefore includes any contracts already filled on the child order.
+type AmendOrderRequest struct {
+	OrderID              string
+	Ticker               string
+	OutcomeSide          string
+	Quantity             domain.Money
+	LimitPrice           domain.Money
+	ClientOrderID        string
+	UpdatedClientOrderID string
+}
+
 type Adapter interface {
 	Name() string
 	ListMarkets(context.Context, []domain.CanonicalEvent) ([]domain.CanonicalMarket, error)
@@ -31,5 +43,6 @@ type Adapter interface {
 	Balance(context.Context) (domain.Money, error)
 	Fills(context.Context, []string) ([]domain.Fill, error)
 	PlaceOrder(context.Context, PlaceOrderRequest) (domain.Order, error)
+	AmendOrder(context.Context, AmendOrderRequest) (domain.Order, error)
 	CancelOrder(context.Context, string) error
 }

@@ -42,13 +42,13 @@ type Service struct {
 	snapshot        domain.Snapshot
 	subscribers     map[chan domain.StreamEvent]struct{}
 	restartExchange chan struct{}
-	bookRequests    chan string
+	bookRequests    chan struct{}
 	availableBooks  map[string]bool
 	activeBook      string
 }
 
 func New(cfg Config, store *storage.Store, adapter exchange.Adapter) *Service {
-	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, orderEngine: orderengine.New(cfg.DemoTrading, adapter), books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1), bookRequests: make(chan string, 1), availableBooks: make(map[string]bool)}
+	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, orderEngine: orderengine.New(cfg.DemoTrading, adapter), books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1), bookRequests: make(chan struct{}, 1), availableBooks: make(map[string]bool)}
 	mode := "live"
 	if cfg.Simulated {
 		mode = "simulated"
@@ -163,6 +163,14 @@ func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrder
 	if !ok || book.Stale {
 		return domain.ParentOrder{}, errors.New("order book is not synchronized")
 	}
+	if strings.EqualFold(strings.TrimSpace(input.Strategy), "follow") {
+		price, available := followPrice(book, input.Side)
+		if !available {
+			return domain.ParentOrder{}, errors.New("the selected side has no resting bid to follow")
+		}
+		input.LimitPrice = price
+		input.Policy = "post_only"
+	}
 	request := orderengine.CreateRequest{
 		EventID: event.ID, Ticker: input.Ticker, Rotation: rotation, Outcome: quote.Outcome,
 		Market: marketLabel, Side: input.Side, Strategy: input.Strategy, Policy: input.Policy,
@@ -188,6 +196,9 @@ func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrder
 	_ = s.store.Audit(ctx, "parent_order_acknowledged", map[string]any{"parent": parent, "child": child})
 	s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
 	s.broadcast(domain.StreamEvent{Type: "order", Data: child})
+	if parent.Strategy == "follow" {
+		s.queueBookRefresh()
+	}
 	return parent, nil
 }
 
@@ -235,6 +246,9 @@ func (s *Service) CancelParentOrder(ctx context.Context, id string) (domain.Pare
 	s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
 	for _, child := range updatedChildren {
 		s.broadcast(domain.StreamEvent{Type: "order", Data: child})
+	}
+	if parent.Strategy == "follow" {
+		s.queueBookRefresh()
 	}
 	return parent, nil
 }
@@ -300,45 +314,44 @@ func (s *Service) recalculateParentRiskLocked() {
 	}
 }
 
-// RequestBook switches the one live order-book subscription to ticker. Only
-// tickers produced by accepted schedule mappings may be requested.
+// RequestBook selects the UI book. Active follow strategies remain subscribed
+// even when their game is collapsed or another game is selected.
 func (s *Service) RequestBook(ticker string) bool {
-	s.mu.RLock()
+	s.mu.Lock()
 	allowed := s.availableBooks[ticker]
 	active := s.activeBook
 	simulated := s.cfg.Simulated
-	s.mu.RUnlock()
 	if !allowed {
+		s.mu.Unlock()
 		return false
 	}
+	s.activeBook = ticker
+	s.mu.Unlock()
 	if active != ticker {
 		if simulated {
 			s.seedSimulatedBook(ticker)
 		} else {
-			s.queueBook(ticker)
+			s.queueBookRefresh()
 		}
 	}
 	return true
 }
 
 func (s *Service) ReleaseBook(ticker string) {
-	s.mu.RLock()
-	active := s.activeBook
-	s.mu.RUnlock()
-	if active == ticker {
-		s.queueBook("")
+	s.mu.Lock()
+	if s.activeBook == ticker {
+		s.activeBook = ""
+		s.mu.Unlock()
+		s.queueBookRefresh()
+		return
 	}
+	s.mu.Unlock()
 }
 
-func (s *Service) queueBook(ticker string) {
+func (s *Service) queueBookRefresh() {
 	select {
-	case s.bookRequests <- ticker:
+	case s.bookRequests <- struct{}{}:
 	default:
-		select {
-		case <-s.bookRequests:
-		default:
-		}
-		s.bookRequests <- ticker
 	}
 }
 
@@ -623,10 +636,11 @@ func (s *Service) setAvailableBooks(tickers []string) {
 	s.mu.Lock()
 	s.availableBooks = available
 	active := s.activeBook
-	s.mu.Unlock()
 	if active != "" && !available[active] {
-		s.queueBook("")
+		s.activeBook = ""
 	}
+	s.mu.Unlock()
+	s.queueBookRefresh()
 }
 
 func eventTickers(events []domain.CanonicalEvent) []string {
@@ -683,6 +697,8 @@ func (s *Service) seedSimulatedBook(ticker string) {
 
 func (s *Service) bookManager(ctx context.Context) {
 	var cancel context.CancelFunc
+	currentKey := ""
+	currentTickers := []string(nil)
 	for {
 		select {
 		case <-ctx.Done():
@@ -690,23 +706,27 @@ func (s *Service) bookManager(ctx context.Context) {
 				cancel()
 			}
 			return
-		case ticker := <-s.bookRequests:
+		case <-s.bookRequests:
+			tickers := s.desiredBookTickers()
+			key := strings.Join(tickers, "\x00")
+			if key == currentKey {
+				continue
+			}
 			if cancel != nil {
 				cancel()
 			}
-			s.mu.Lock()
-			previous := s.activeBook
-			s.activeBook = ticker
-			s.mu.Unlock()
-			if previous != "" {
+			for _, previous := range currentTickers {
 				if book, ok := s.books.MarkStale(previous); ok {
+					s.applyFollowBook(book)
 					s.broadcast(domain.StreamEvent{Type: "book_stale", Data: book})
 				}
 			}
-			if ticker != "" && s.exchange != nil {
+			currentKey = key
+			currentTickers = tickers
+			if len(tickers) > 0 && s.exchange != nil {
 				var child context.Context
 				child, cancel = context.WithCancel(ctx)
-				go s.bookLoop(child, ticker)
+				go s.bookLoop(child, tickers)
 			} else {
 				cancel = nil
 			}
@@ -714,10 +734,30 @@ func (s *Service) bookManager(ctx context.Context) {
 	}
 }
 
-func (s *Service) bookLoop(ctx context.Context, ticker string) {
+func (s *Service) desiredBookTickers() []string {
+	s.mu.RLock()
+	set := make(map[string]bool)
+	if s.activeBook != "" && s.availableBooks[s.activeBook] {
+		set[s.activeBook] = true
+	}
+	for _, parent := range s.snapshot.ParentOrders {
+		if parent.Strategy == "follow" && parent.Ticker != "" && !parentOrderTerminal(parent.Status) && s.availableBooks[parent.Ticker] {
+			set[parent.Ticker] = true
+		}
+	}
+	s.mu.RUnlock()
+	tickers := make([]string, 0, len(set))
+	for ticker := range set {
+		tickers = append(tickers, ticker)
+	}
+	sort.Strings(tickers)
+	return tickers
+}
+
+func (s *Service) bookLoop(ctx context.Context, tickers []string) {
 	backoff := time.Second
 	for ctx.Err() == nil {
-		subscription, err := s.exchange.SubscribeBooks(ctx, []string{ticker})
+		subscription, err := s.exchange.SubscribeBooks(ctx, tickers)
 		if err != nil {
 			select {
 			case <-ctx.Done():
@@ -744,15 +784,27 @@ func (s *Service) bookLoop(ctx context.Context, ticker string) {
 				s.handleExchangeEvent(event)
 			case err := <-subscription.Errors:
 				if err != nil {
-					slog.Warn("order-book stream", "ticker", ticker, "error", err)
+					slog.Warn("order-book stream", "tickers", len(tickers), "error", err)
 				}
 				ended = true
 			}
 		}
 		_ = subscription.Close()
-		if book, ok := s.books.MarkStale(ticker); ok {
-			s.broadcast(domain.StreamEvent{Type: "book_stale", Data: book})
+		for _, ticker := range tickers {
+			if book, ok := s.books.MarkStale(ticker); ok {
+				s.applyFollowBook(book)
+				s.broadcast(domain.StreamEvent{Type: "book_stale", Data: book})
+			}
 		}
+	}
+}
+
+func parentOrderTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "filled", "executed", "closed", "canceled", "cancelled", "rejected":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -761,14 +813,17 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 	case "orderbook":
 		if book, ok := event.Data.(domain.OrderBook); ok {
 			s.books.Snapshot(book)
+			s.applyFollowBook(book)
 			s.broadcast(event)
 		}
 	case "orderbook_delta":
 		if delta, ok := event.Data.(domain.OrderBookDelta); ok {
 			book, err := s.books.Apply(delta)
 			if err != nil {
+				s.applyFollowBook(book)
 				s.broadcast(domain.StreamEvent{Type: "book_stale", Data: book})
 			} else {
+				s.applyFollowBook(book)
 				s.broadcast(domain.StreamEvent{Type: "orderbook", Data: book})
 			}
 		}
@@ -791,6 +846,7 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 					slog.Error("persist order-reconciled parent order", "parent_id", parent.ID, "order_id", order.ID, "error", err)
 				}
 				s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
+				s.queueBookRefresh()
 			}
 			s.broadcast(event)
 		}
@@ -814,6 +870,54 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 	default:
 		s.broadcast(event)
 	}
+}
+
+func (s *Service) applyFollowBook(book domain.OrderBook) {
+	for _, result := range s.orderEngine.HandleBook(context.Background(), book) {
+		if !result.Changed || result.Parent.ID == "" {
+			continue
+		}
+		s.mu.Lock()
+		s.upsertParentLocked(result.Parent)
+		if result.Order != nil {
+			s.upsertOrderLocked(*result.Order)
+		}
+		s.recalculateParentRiskLocked()
+		s.mu.Unlock()
+		if err := s.store.SaveParentOrder(context.Background(), result.Parent); err != nil {
+			slog.Error("persist follow decision", "parent_id", result.Parent.ID, "error", err)
+		}
+		audit := map[string]any{"parent": result.Parent, "book_sequence": book.Sequence}
+		if result.Order != nil {
+			audit["amended_order"] = result.Order
+		}
+		if result.Err != nil {
+			audit["strategy_error"] = result.Err.Error()
+			slog.Warn("follow strategy paused", "parent_id", result.Parent.ID, "error", result.Err)
+		}
+		_ = s.store.Audit(context.Background(), "follow_book_decision", audit)
+		s.broadcast(domain.StreamEvent{Type: "parent_order", Data: result.Parent})
+		if result.Order != nil {
+			s.broadcast(domain.StreamEvent{Type: "order", Data: *result.Order})
+		}
+	}
+}
+
+func followPrice(book domain.OrderBook, side string) (domain.Money, bool) {
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "yes":
+		if len(book.Yes) > 0 && book.Yes[0].Price > 0 && book.Yes[0].Price < domain.Dollar {
+			return book.Yes[0].Price, true
+		}
+	case "no":
+		if len(book.No) > 0 {
+			price := domain.Dollar - book.No[0].Price
+			if price > 0 && price < domain.Dollar {
+				return price, true
+			}
+		}
+	}
+	return 0, false
 }
 
 func (s *Service) applyFill(fill domain.Fill, publish bool) bool {
@@ -869,6 +973,7 @@ func (s *Service) applyFill(fill domain.Fill, publish bool) bool {
 				s.broadcast(domain.StreamEvent{Type: "order", Data: *refreshedChild})
 			}
 		}
+		s.queueBookRefresh()
 	}
 	s.mu.Lock()
 	s.snapshot.Fills = append([]domain.Fill{fill}, s.snapshot.Fills...)

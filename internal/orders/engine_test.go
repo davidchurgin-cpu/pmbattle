@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
 	"github.com/davidchurgin-cpu/pmbattle/internal/exchange"
@@ -13,8 +14,10 @@ import (
 
 type fakeExecutor struct {
 	placed    []exchange.PlaceOrderRequest
+	amended   []exchange.AmendOrderRequest
 	canceled  []string
 	failPlace int
+	failAmend bool
 }
 
 func (f *fakeExecutor) PlaceOrder(_ context.Context, request exchange.PlaceOrderRequest) (domain.Order, error) {
@@ -24,6 +27,13 @@ func (f *fakeExecutor) PlaceOrder(_ context.Context, request exchange.PlaceOrder
 	}
 	id := fmt.Sprintf("child-%d", len(f.placed))
 	return domain.Order{ID: id, Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide, Status: "resting", Quantity: request.Quantity, LimitPrice: request.LimitPrice}, nil
+}
+func (f *fakeExecutor) AmendOrder(_ context.Context, request exchange.AmendOrderRequest) (domain.Order, error) {
+	f.amended = append(f.amended, request)
+	if f.failAmend {
+		return domain.Order{}, errors.New("amend unavailable")
+	}
+	return domain.Order{ID: request.OrderID, Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide, Status: "resting", Quantity: request.Quantity, LimitPrice: request.LimitPrice}, nil
 }
 func (f *fakeExecutor) CancelOrder(_ context.Context, id string) error {
 	f.canceled = append(f.canceled, id)
@@ -69,7 +79,7 @@ func TestEngineIsHardDisabled(t *testing.T) {
 func TestRejectsUnsupportedStrategyAndPriceCap(t *testing.T) {
 	engine := New(true, &fakeExecutor{})
 	request := validRequest()
-	request.Strategy = "follow"
+	request.Strategy = "twap"
 	if _, _, err := engine.Create(context.Background(), request); !errors.Is(err, ErrUnsupportedStrategy) {
 		t.Fatalf("got %v, want unsupported strategy", err)
 	}
@@ -248,5 +258,86 @@ func TestLateFillAfterIcebergCancelUpdatesRiskWithoutRestart(t *testing.T) {
 	updated, refreshed, matched, err := engine.HandleFill(context.Background(), domain.Fill{ID: "late-fill", OrderID: child.ID, Quantity: child.Quantity, CashRisk: fillQuote.AllInCost})
 	if err != nil || !matched || refreshed != nil || updated.Status != "canceled" || updated.FilledRisk != fillQuote.AllInCost || len(executor.placed) != 1 || len(executor.canceled) != 1 {
 		t.Fatalf("late fill restarted canceled iceberg: parent=%+v child=%+v matched=%v placed=%d canceled=%d err=%v", updated, refreshed, matched, len(executor.placed), len(executor.canceled), err)
+	}
+}
+
+func TestFollowJoinsTopWithoutCrossingAndThrottlesAmends(t *testing.T) {
+	executor := &fakeExecutor{}
+	engine := New(true, executor)
+	now := time.Date(2026, 8, 31, 20, 0, 0, 0, time.UTC)
+	engine.now = func() time.Time { return now }
+	request := validRequest()
+	request.Strategy = "follow"
+	request.Policy = "limit"
+	request.PriceCapMoneyline = -200
+	parent, child, err := engine.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.Policy != "post_only" || !executor.placed[0].PostOnly {
+		t.Fatalf("follow was not forced post-only: parent=%+v request=%+v", parent, executor.placed[0])
+	}
+	book := domain.OrderBook{Ticker: parent.Ticker, Yes: []domain.BookLevel{{Price: 5100, Quantity: 50 * domain.Dollar}}, No: []domain.BookLevel{{Price: 5300, Quantity: 50 * domain.Dollar}}}
+	results := engine.HandleBook(context.Background(), book)
+	if len(results) != 1 || results[0].Err != nil || results[0].Order == nil || len(executor.amended) != 1 {
+		t.Fatalf("top bid was not followed: results=%+v amended=%+v", results, executor.amended)
+	}
+	if got := executor.amended[0]; got.OrderID != child.ID || got.LimitPrice != 5100 || got.OutcomeSide != "yes" {
+		t.Fatalf("wrong follow amendment: %+v", got)
+	}
+	if results[0].Parent.FilledRisk+results[0].Parent.ReservedRisk > results[0].Parent.CashRiskTarget {
+		t.Fatalf("follow exceeded cash risk: %+v", results[0].Parent)
+	}
+	now = now.Add(100 * time.Millisecond)
+	book.Yes[0].Price = 5200
+	if got := engine.HandleBook(context.Background(), book); len(got) != 0 || len(executor.amended) != 1 {
+		t.Fatalf("follow amendment was not throttled: results=%+v amended=%d", got, len(executor.amended))
+	}
+	now = now.Add(FollowRepriceInterval)
+	if got := engine.HandleBook(context.Background(), book); len(got) != 1 || len(executor.amended) != 2 || executor.amended[1].LimitPrice != 5200 {
+		t.Fatalf("follow did not catch up after throttle: results=%+v amended=%+v", got, executor.amended)
+	}
+}
+
+func TestFollowPausesOnStaleBookAndHardPriceCap(t *testing.T) {
+	executor := &fakeExecutor{}
+	engine := New(true, executor)
+	request := validRequest()
+	request.Strategy = "follow"
+	request.Policy = "post_only"
+	request.LimitPrice = 4500
+	request.PriceCapMoneyline = 100
+	parent, _, err := engine.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := domain.OrderBook{Ticker: parent.Ticker, Stale: true, Yes: []domain.BookLevel{{Price: 4600, Quantity: domain.Dollar}}}
+	results := engine.HandleBook(context.Background(), stale)
+	if len(results) != 1 || results[0].Parent.Status != "paused_stale" || len(executor.amended) != 0 {
+		t.Fatalf("stale book did not pause safely: results=%+v amended=%v", results, executor.amended)
+	}
+	capped := domain.OrderBook{Ticker: parent.Ticker, Yes: []domain.BookLevel{{Price: 5500, Quantity: domain.Dollar}}}
+	results = engine.HandleBook(context.Background(), capped)
+	if len(results) != 1 || results[0].Parent.Status != "price_capped" || len(executor.amended) != 0 {
+		t.Fatalf("price cap did not block amendment: results=%+v amended=%v", results, executor.amended)
+	}
+}
+
+func TestFollowNoUsesComplementOfBestYesAskAndPausesOnAmendError(t *testing.T) {
+	executor := &fakeExecutor{failAmend: true}
+	engine := New(true, executor)
+	request := validRequest()
+	request.Strategy = "follow"
+	request.Policy = "post_only"
+	request.Side = "no"
+	request.PriceCapMoneyline = -300
+	parent, _, err := engine.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	book := domain.OrderBook{Ticker: parent.Ticker, No: []domain.BookLevel{{Price: 4700, Quantity: domain.Dollar}}}
+	results := engine.HandleBook(context.Background(), book)
+	if len(results) != 1 || results[0].Err == nil || results[0].Parent.Status != "paused" || len(executor.amended) != 1 || executor.amended[0].LimitPrice != 5300 {
+		t.Fatalf("no-side follow was unsafe: results=%+v amended=%+v", results, executor.amended)
 	}
 }

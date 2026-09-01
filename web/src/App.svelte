@@ -154,6 +154,10 @@
   function parentForOrder(order: Order) {
     return snapshot.parentOrders.find(parent => parent.childOrderIds.includes(order.id))
   }
+  function monitoredStatus(order: Order) {
+    const parent = parentForOrder(order)
+    return parent ? `${parent.strategy} · ${parent.status}${parent.strategy === 'follow' && parent.replaceCount ? ` · ${parent.replaceCount} reprices` : ''}` : order.status
+  }
   async function cancelParent(parent: ParentOrder) {
     if (!snapshot.health.tradingEnabled || cancelingParentID) return
     cancelingParentID = parent.id
@@ -289,7 +293,7 @@
         <div class="table-head"><span>Time / market</span><span>Exchange</span><span>Quantity</span><span>Raw</span><span>All-in</span><span>Fee</span><span>Cash risk</span></div>
         {#each snapshot.fills as fill}<div class="table-row"><span><b>{new Date(fill.createdAt).toLocaleTimeString()} · #{fill.rotation}</b><small>{fill.team} {fill.market}</small></span><span>{fill.exchange}</span><span>{qty(fill.quantity)}</span><span>{money(fill.rawPrice)}</span><span>{ml(fill.allInMoneyline)}</span><span>{money(fill.fee)}</span><span>{money(fill.cashRisk)}</span></div>{:else}<div class="empty">No fills yet</div>{/each}
       {:else if trayTab === 'orders'}
-        {#each snapshot.orders as order}<div class="table-row compact"><span><b>#{order.rotation} {order.market}</b><small>{order.ticker}</small></span><span>{order.exchange}</span><span>{qty(order.quantity)}</span><span>{money(order.limitPrice)}</span><span>{order.status}</span><span>—</span><span class="order-risk">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
+        {#each snapshot.orders as order}<div class="table-row compact"><span><b>#{order.rotation} {order.market}</b><small>{order.ticker}</small></span><span>{order.exchange}</span><span>{qty(order.quantity)}</span><span>{money(order.limitPrice)}</span><span>{monitoredStatus(order)}</span><span>—</span><span class="order-risk">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
       {:else if trayTab === 'positions'}
         {#each snapshot.positions as position}<div class="table-row compact"><span><b>#{position.rotation} {position.market}</b><small>{position.ticker}</small></span><span>{position.exchange}</span><span>{qty(position.quantity)}</span><span>{money(position.averagePrice)}</span><span>{money(position.currentPrice)}</span><span>—</span><span>{money(position.unrealizedPnl)}</span></div>{:else}<div class="empty">No positions</div>{/each}
       {:else}<div class="empty">Historical audit records will appear here.</div>{/if}
@@ -321,7 +325,7 @@
       <div class="monitor-body">
         <header><b>Working orders</b><button on:click={() => showActivity('orders')}>Full orders</button></header>
         {#each workingOrders.slice(0, 5) as order}
-          <div class="monitor-row"><span><b>{order.market || order.ticker}</b><small>{order.exchange} · {order.status}</small></span><span><b>{qty(Math.max(0, order.quantity - order.filledQuantity))}</b><small>remaining</small></span>{#if snapshot.health.tradingEnabled && parentForOrder(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? '…' : 'Cancel'}</button>{/if}</div>
+          <div class="monitor-row"><span><b>{order.market || order.ticker}</b><small>{order.exchange} · {monitoredStatus(order)}</small></span><span><b>{qty(Math.max(0, order.quantity - order.filledQuantity))}</b><small>remaining</small></span>{#if snapshot.health.tradingEnabled && parentForOrder(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? '…' : 'Cancel'}</button>{/if}</div>
         {:else}<div class="monitor-empty">No working orders</div>{/each}
         <header><b>Recent fills</b><button on:click={() => showActivity('fills')}>Full fills</button></header>
         {#each snapshot.fills.slice(0, 3) as fill}
@@ -347,6 +351,7 @@
         {#if slipStrategy === 'iceberg'}<label><span>Visible contracts</span><input type="number" min="1" step="1" bind:value={slipSlice} /></label>{/if}
       </div>
       <div class="slip-summary"><span>Estimated contracts <b>{qty(slipQuantity)}</b></span><span>Fee-adjusted cap <b>{ml(Number(slipCap))}</b></span></div>
+      {#if slipStrategy === 'follow'}<p class="slip-status">Joins the live top bid, stays post-only, and pauses at your all-in cap or on stale data.</p>{/if}
       <button class="submit-order" disabled={!snapshot.health.tradingEnabled || !slipPrice || Number(slipRisk) <= 0} on:click={submitOrder}>{snapshot.health.tradingEnabled ? 'Place demo order' : 'Demo trading locked'}</button>
       {#if slipStatus}<p class="slip-status" aria-live="polite">{slipStatus}</p>{/if}
     </aside>

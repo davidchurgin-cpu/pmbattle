@@ -162,6 +162,8 @@ type ParentOrder struct {
 	ChildOrderIDs     []string          `json:"childOrderIds"`
 	Children          []ChildOrderState `json:"children,omitempty"`
 	ProcessedFillIDs  []string          `json:"processedFillIds,omitempty"`
+	LastRepricedAt    time.Time         `json:"lastRepricedAt,omitempty"`
+	ReplaceCount      int               `json:"replaceCount,omitempty"`
 	CreatedAt         time.Time         `json:"createdAt"`
 	UpdatedAt         time.Time         `json:"updatedAt"`
 }
