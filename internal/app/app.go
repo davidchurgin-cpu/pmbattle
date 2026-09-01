@@ -447,13 +447,42 @@ func (s *Service) upsertParentLocked(parent domain.ParentOrder) {
 }
 
 func (s *Service) recalculateParentRiskLocked() {
-	s.snapshot.AtRisk = 0
-	for _, parent := range s.snapshot.ParentOrders {
-		s.snapshot.AtRisk += parent.FilledRisk
-		if parent.Status != "canceled" && parent.Status != "filled" && parent.Status != "rejected" {
-			s.snapshot.AtRisk += parent.ReservedRisk
+	accountRisk := domain.Money(0)
+	for _, position := range s.snapshot.Positions {
+		accountRisk += absMoney(position.CashRisk)
+	}
+	for _, order := range s.snapshot.Orders {
+		if !terminalOrderStatus(order.Status) {
+			accountRisk += absMoney(order.CashRisk)
 		}
 	}
+	managedRisk := domain.Money(0)
+	for _, parent := range s.snapshot.ParentOrders {
+		managedRisk += parent.FilledRisk
+		if parent.Status != "canceled" && parent.Status != "filled" && parent.Status != "rejected" {
+			managedRisk += parent.ReservedRisk
+		}
+	}
+	s.snapshot.AtRisk = accountRisk
+	if managedRisk > accountRisk {
+		s.snapshot.AtRisk = managedRisk
+	}
+}
+
+func terminalOrderStatus(status string) bool {
+	switch strings.ToLower(status) {
+	case "canceled", "cancelled", "executed", "filled", "closed", "rejected":
+		return true
+	default:
+		return false
+	}
+}
+
+func absMoney(value domain.Money) domain.Money {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 // RequestBook selects the UI book. Active follow strategies remain subscribed
@@ -1076,8 +1105,8 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 			s.upsertOrderLocked(order)
 			if parentMatched {
 				s.upsertParentLocked(parent)
-				s.recalculateParentRiskLocked()
 			}
+			s.recalculateParentRiskLocked()
 			s.mu.Unlock()
 			if parentMatched {
 				if err := s.store.SaveParentOrder(context.Background(), parent); err != nil {
@@ -1103,6 +1132,7 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 			if !replaced {
 				s.snapshot.Positions = append([]domain.Position{position}, s.snapshot.Positions...)
 			}
+			s.recalculateParentRiskLocked()
 			s.mu.Unlock()
 			s.broadcast(event)
 		}

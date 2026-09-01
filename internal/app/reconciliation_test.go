@@ -126,6 +126,9 @@ func TestAccountReconciliationEnrichesAndPersistsPositionsAndSettlements(t *test
 	if len(snapshot.Settlements) != 1 || snapshot.Settlements[0].EventID != "event-1" || snapshot.Settlements[0].Rotation != "451" || snapshot.Settlements[0].Market != "Spread 3.5" {
 		t.Fatalf("settlement not enriched: %+v", snapshot.Settlements)
 	}
+	if snapshot.AtRisk != domain.Dollar {
+		t.Fatalf("open position exposure missing from cash at risk: %d", snapshot.AtRisk)
+	}
 	account := accountEvent.Data.(domain.AccountSnapshot)
 	if len(account.Settlements) != 1 || account.Settlements[0].Ticker != "TEST" {
 		t.Fatalf("settlement absent from browser account snapshot: %+v", account)
@@ -133,6 +136,24 @@ func TestAccountReconciliationEnrichesAndPersistsPositionsAndSettlements(t *test
 	persisted, err := store.LoadSettlements(context.Background(), 10)
 	if err != nil || len(persisted) != 1 || !persisted[0].SettledAt.Equal(settledAt) {
 		t.Fatalf("settlement not persisted: %+v err=%v", persisted, err)
+	}
+}
+
+func TestCashAtRiskUsesAccountExposureWithoutDoubleCountingManagedParents(t *testing.T) {
+	service := &Service{snapshot: domain.Snapshot{
+		Positions:    []domain.Position{{CashRisk: 60 * domain.Dollar}},
+		Orders:       []domain.Order{{ID: "active", Status: "resting", CashRisk: 40 * domain.Dollar}, {ID: "done", Status: "filled", CashRisk: 90 * domain.Dollar}},
+		ParentOrders: []domain.ParentOrder{{ID: "managed", Status: "resting", FilledRisk: 60 * domain.Dollar, ReservedRisk: 40 * domain.Dollar}},
+	}}
+	service.recalculateParentRiskLocked()
+	if service.snapshot.AtRisk != 100*domain.Dollar {
+		t.Fatalf("managed exposure was double counted: %d", service.snapshot.AtRisk)
+	}
+	service.snapshot.ParentOrders[0].FilledRisk = 80 * domain.Dollar
+	service.snapshot.ParentOrders[0].ReservedRisk = 40 * domain.Dollar
+	service.recalculateParentRiskLocked()
+	if service.snapshot.AtRisk != 120*domain.Dollar {
+		t.Fatalf("conservative parent fallback was not used: %d", service.snapshot.AtRisk)
 	}
 }
 
