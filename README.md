@@ -94,6 +94,8 @@ Set `PMBATTLE_DB=/app/data/pmbattle.db` when using the volume above.
 
 PMBattle uses Kalshi's V2 order endpoint and reconciles account orders after submission. If an order submission ever reports an ambiguous response, check the Orders tray or Kalshi directly before retrying so a live order is not duplicated.
 
+Every active row in the Orders tray can be canceled individually. This includes orders recovered from Kalshi after a restart, even when no local parent-order record exists. Live cancellations require browser confirmation and are written to the audit trail.
+
 Create an API key in the matching Kalshi environment and store the private key on the server, outside this repository.
 
 ```text

@@ -39,6 +39,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/books/{ticker}", s.book)
 	mux.HandleFunc("DELETE /api/books/{ticker}", s.releaseBook)
 	mux.HandleFunc("POST /api/parent-orders", s.createParentOrder)
+	mux.HandleFunc("DELETE /api/orders/{id}", s.cancelOrder)
 	mux.HandleFunc("POST /api/parent-orders/cancel", s.cancelParentOrders)
 	mux.HandleFunc("POST /api/parent-orders/{id}/resume", s.resumeParentOrder)
 	mux.HandleFunc("DELETE /api/parent-orders/{id}", s.cancelParentOrder)
@@ -47,6 +48,20 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/", spaHandler(s.static))
 	}
 	return securityHeaders(guard(mux))
+}
+func (s *Server) cancelOrder(w http.ResponseWriter, r *http.Request) {
+	order, err := s.service.CancelOrder(r.Context(), r.PathValue("id"))
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, orderengine.ErrDisabled) {
+			status = http.StatusForbidden
+		} else if errors.Is(err, app.ErrOrderNotFound) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, order)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

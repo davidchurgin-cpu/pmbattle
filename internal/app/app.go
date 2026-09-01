@@ -189,6 +189,7 @@ type CreateParentOrderInput struct {
 }
 
 var ErrInvalidCancelScope = errors.New("invalid cancel scope")
+var ErrOrderNotFound = errors.New("active order not found")
 var ErrInsufficientAvailableBalance = errors.New("cash-risk target exceeds available bankroll")
 var ErrMappingReviewNotFound = errors.New("mapping review not found")
 var ErrInvalidMappingDecision = errors.New("mapping decision is not one of the reviewed schedule candidates")
@@ -438,6 +439,65 @@ func (s *Service) CancelParentOrder(ctx context.Context, id string) (domain.Pare
 		s.queueBookRefresh()
 	}
 	return parent, nil
+}
+
+// CancelOrder cancels both PMBattle-managed children and live orders recovered
+// from Kalshi account reconciliation. Recovered orders have no parent record,
+// but must still be cancellable from the trading station.
+func (s *Service) CancelOrder(ctx context.Context, id string) (domain.Order, error) {
+	if !s.Snapshot().Health.TradingEnabled {
+		return domain.Order{}, orderengine.ErrDisabled
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return domain.Order{}, ErrOrderNotFound
+	}
+	if parent, ok := s.orderEngine.ParentForChild(id); ok {
+		if _, err := s.CancelParentOrder(ctx, parent.ID); err != nil {
+			return domain.Order{}, err
+		}
+		for _, order := range s.Snapshot().Orders {
+			if order.ID == id {
+				return order, nil
+			}
+		}
+		return domain.Order{ID: id, Exchange: "Kalshi", Status: "canceled"}, nil
+	}
+
+	s.orderMu.Lock()
+	defer s.orderMu.Unlock()
+	s.mu.RLock()
+	var target domain.Order
+	for _, order := range s.snapshot.Orders {
+		if order.ID == id && !parentOrderTerminal(order.Status) {
+			target = order
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if target.ID == "" {
+		return domain.Order{}, ErrOrderNotFound
+	}
+	_ = s.store.Audit(ctx, "order_cancel_requested", target)
+	if err := s.exchange.CancelOrder(ctx, id); err != nil {
+		_ = s.store.Audit(ctx, "order_cancel_failed", map[string]any{"order": target, "error": err.Error()})
+		return domain.Order{}, err
+	}
+	target.Status = "canceled"
+	target.CashRisk = 0
+	s.mu.Lock()
+	for i := range s.snapshot.Orders {
+		if s.snapshot.Orders[i].ID == id {
+			s.snapshot.Orders[i] = target
+			break
+		}
+	}
+	s.recalculateParentRiskLocked()
+	s.mu.Unlock()
+	_ = s.store.Audit(ctx, "order_canceled", target)
+	s.broadcast(domain.StreamEvent{Type: "order", Data: target})
+	s.broadcastAccountSummary()
+	return target, nil
 }
 
 func (s *Service) ResumeParentOrder(ctx context.Context, id string) (domain.ParentOrder, error) {

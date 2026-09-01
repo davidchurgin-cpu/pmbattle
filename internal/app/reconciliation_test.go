@@ -349,6 +349,28 @@ func TestScopedCancelMatchesManagedParentsAndReportsPartialFailures(t *testing.T
 	}
 }
 
+func TestCancelReconciledOrderWithoutParent(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "reconciled-cancel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter := &appFakeAdapter{}
+	service := New(Config{TradingEnabled: true, ExchangeEnvironment: "production"}, store, adapter)
+	service.snapshot.Orders = []domain.Order{{ID: "live-order-1", Exchange: "Kalshi", Ticker: "TEST", Status: "resting", CashRisk: 50 * domain.Dollar}}
+
+	order, err := service.CancelOrder(context.Background(), "live-order-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adapter.canceled) != 1 || adapter.canceled[0] != "live-order-1" || order.Status != "canceled" || order.CashRisk != 0 {
+		t.Fatalf("unexpected cancellation: adapter=%v order=%+v", adapter.canceled, order)
+	}
+	if got := service.Snapshot().Orders[0]; got.Status != "canceled" || got.CashRisk != 0 {
+		t.Fatalf("snapshot was not updated: %+v", got)
+	}
+}
+
 func TestResumeFollowRefusesStaleBookBeforeEngineStateChanges(t *testing.T) {
 	store, err := storage.Open(filepath.Join(t.TempDir(), "resume-stale.db"))
 	if err != nil {
