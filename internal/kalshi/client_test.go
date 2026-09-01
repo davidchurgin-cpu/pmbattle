@@ -216,6 +216,8 @@ func TestSnapshotPaginatesRestingOrdersAndOpenPositions(t *testing.T) {
 			} else {
 				_, _ = w.Write([]byte(`{"market_positions":[{"ticker":"A","position_fp":"2.0000","total_traded_dollars":"4.0000","market_exposure_dollars":"1.5000","realized_pnl_dollars":"-0.1000","fees_paid_dollars":"0.0200","last_updated_ts":"2026-08-31T12:00:00Z"}],"cursor":"positions-2"}`))
 			}
+		case "/portfolio/fills":
+			_, _ = w.Write([]byte(`{"fills":[{"fill_id":"fill-history-1","order_id":"order-old","market_ticker":"A","side":"yes","yes_price_dollars":"0.4000","count_fp":"2.0000","fee_cost":"0.0200","created_time":"2026-08-30T12:00:00Z"}]}`))
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -226,7 +228,7 @@ func TestSnapshotPaginatesRestingOrdersAndOpenPositions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(orders) != 2 || len(positions) != 2 || len(fills) != 0 {
+	if len(orders) != 2 || len(positions) != 2 || len(fills) != 1 || fills[0].ID != "fill-history-1" {
 		t.Fatalf("unexpected snapshot orders=%+v positions=%+v fills=%+v", orders, positions, fills)
 	}
 	if positions[0].Ticker != "B" || positions[0].Side != "no" || positions[0].Quantity != -3*domain.Dollar || positions[0].CashRisk != 12_000 || positions[0].FeesPaid != 500 {

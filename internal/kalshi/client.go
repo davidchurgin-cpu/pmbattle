@@ -282,7 +282,33 @@ func (c *Client) Snapshot(ctx context.Context) ([]domain.Order, []domain.Positio
 		cursor = payload.Cursor
 	}
 	sort.SliceStable(positions, func(i, j int) bool { return positions[i].UpdatedAt.After(positions[j].UpdatedAt) })
-	return orders, positions, nil, nil
+
+	// Account reconciliation must include fills created while PMBattle was not
+	// running. The service deduplicates these against live WebSocket fills and
+	// retains the newest 250 for the trading tray.
+	var fillPayload struct {
+		Fills []rawFill `json:"fills"`
+	}
+	if err := c.getJSON(ctx, "/portfolio/fills?limit=1000", &fillPayload); err != nil {
+		return nil, nil, nil, err
+	}
+	fills := make([]domain.Fill, 0, len(fillPayload.Fills))
+	seenFills := make(map[string]bool)
+	for _, raw := range fillPayload.Fills {
+		fill := normalizeFill(raw)
+		key := fill.ID
+		if key == "" {
+			key = fill.OrderID + "|" + fill.CreatedAt.Format(time.RFC3339Nano) + "|" + fixed.Format(fill.Quantity)
+		}
+		if !seenFills[key] {
+			seenFills[key] = true
+			fills = append(fills, fill)
+		}
+	}
+	// applyFill prepends each fill, so oldest-to-newest input produces a
+	// newest-first tray regardless of the API's response ordering.
+	sort.SliceStable(fills, func(i, j int) bool { return fills[i].CreatedAt.Before(fills[j].CreatedAt) })
+	return orders, positions, fills, nil
 }
 
 func (c *Client) Balance(ctx context.Context) (domain.Money, error) {

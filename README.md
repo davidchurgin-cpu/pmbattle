@@ -96,6 +96,8 @@ PMBattle uses Kalshi's V2 order endpoint and reconciles account orders after sub
 
 Every active row in the Orders tray can be canceled individually. This includes orders recovered from Kalshi after a restart, even when no local parent-order record exists. Live cancellations require browser confirmation and are written to the audit trail.
 
+The Fills tray imports recent account-wide Kalshi fill history during every account reconciliation, including executions that occurred while PMBattle was stopped. Live and historical fills are deduplicated and the newest 250 remain visible.
+
 Create an API key in the matching Kalshi environment and store the private key on the server, outside this repository.
 
 ```text

@@ -23,6 +23,7 @@ type appFakeAdapter struct {
 	markets           []domain.CanonicalMarket
 	marketCalls       int
 	snapshotPositions []domain.Position
+	snapshotFills     []domain.Fill
 	settlements       []domain.Settlement
 	balance           domain.Money
 	beforeSnapshot    func()
@@ -56,7 +57,7 @@ func (f *appFakeAdapter) Snapshot(ctx context.Context) ([]domain.Order, []domain
 	if ctx.Err() != nil {
 		return nil, nil, nil, ctx.Err()
 	}
-	return nil, f.snapshotPositions, nil, nil
+	return nil, f.snapshotPositions, f.snapshotFills, nil
 }
 func (f *appFakeAdapter) Balance(ctx context.Context) (domain.Money, error) {
 	if ctx.Err() != nil {
@@ -170,6 +171,29 @@ func TestAccountReconciliationEnrichesAndPersistsPositionsAndSettlements(t *test
 	persisted, err := store.LoadSettlements(context.Background(), 10)
 	if err != nil || len(persisted) != 1 || !persisted[0].SettledAt.Equal(settledAt) {
 		t.Fatalf("settlement not persisted: %+v err=%v", persisted, err)
+	}
+}
+
+func TestAccountReconciliationImportsHistoricalFills(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "fill-history.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	created := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	adapter := &appFakeAdapter{snapshotFills: []domain.Fill{{ID: "historical-fill", OrderID: "old-order", Exchange: "Kalshi", Ticker: "TEST", Side: "yes", Quantity: 2 * domain.Dollar, RawPrice: 4000, CreatedAt: created}}}
+	service := New(Config{}, store, adapter)
+	quote := domain.PriceQuote{Ticker: "TEST", Outcome: "Team A"}
+	service.snapshot.Events = []domain.CanonicalEvent{{ID: "event-1", Participants: []domain.Participant{{Rotation: "451", Name: "Team A"}, {Rotation: "452", Name: "Team B"}}, Markets: []domain.MarketView{{Type: domain.MarketMoneyline, Away: &quote}}}}
+
+	service.reconcileAccount(context.Background(), false)
+	snapshot := service.Snapshot()
+	if len(snapshot.Fills) != 1 || snapshot.Fills[0].ID != "historical-fill" || snapshot.Fills[0].EventID != "event-1" || snapshot.Fills[0].Team != "Team A" || snapshot.Fills[0].Rotation != "451" {
+		t.Fatalf("historical fill was not imported and enriched: %+v", snapshot.Fills)
+	}
+	service.reconcileAccount(context.Background(), false)
+	if len(service.Snapshot().Fills) != 1 {
+		t.Fatalf("historical fill was duplicated: %+v", service.Snapshot().Fills)
 	}
 }
 
