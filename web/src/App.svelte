@@ -95,6 +95,8 @@
   $: activeMoneyline = displayAsks[0] ? takerQuote(displayAsks[0]).moneyline : activeQuote?.allInMoneyline || selectedQuote?.allInMoneyline
   $: slipQuantity = slipPrice > 0 ? Math.max(10000, Math.floor((Number(slipRisk) || 0) * 100000000 / slipPrice)) : 10000
   $: slipQuote = slipPrice > 0 ? takerQuote({ price: slipPrice, quantity: slipQuantity }) : null
+  $: slipRiskMoney = Math.round((Number(slipRisk) || 0) * 10000)
+  $: slipOverCap = Boolean(snapshot.health.maxCashRisk) && slipRiskMoney > (snapshot.health.maxCashRisk || 0)
   $: workingOrders = snapshot.orders.filter(order => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((order.status || '').toLowerCase()))
   $: activeParents = snapshot.parentOrders.filter(parent => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((parent.status || '').toLowerCase()))
   $: filteredMappingReviews = mappingReviews.filter(review => `${review.title} ${review.exchange} ${review.tickers.join(' ')} ${review.candidates.flatMap(candidate => candidate.participants.map(participant => `${participant.rotation} ${participant.name} ${participant.abbreviation}`)).join(' ')}`.toLowerCase().includes(mappingQuery.toLowerCase()))
@@ -439,6 +441,7 @@
           <span><small>Available to trade</small><b>{money(snapshot.bankroll)}</b></span>
           <span><small>New-order capacity</small><b>{money(snapshot.availableToAllocate)}</b></span>
           <span><small>Cash at risk</small><b>{money(snapshot.atRisk)}</b></span>
+          <span><small>Per-order cap</small><b>{snapshot.health.maxCashRisk ? money(snapshot.health.maxCashRisk) : '—'}</b><i>PMBATTLE_MAX_CASH_RISK</i></span>
         </div>
         <p class="safety-note" class:armed={snapshot.health.tradingEnabled}>{snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'REAL Kalshi orders are enabled on this server. Every submission asks for confirmation first. To lock it again, stop the server, set PMBATTLE_TRADING_ENABLED=false, and start it again.' : 'Kalshi demo order entry is enabled. Demo orders use play money only.' : snapshot.health.tradingLock || 'Order entry is locked.'}</p>
       </section>
@@ -491,8 +494,9 @@
         {#if slipStrategy === 'iceberg'}<label><span>Visible contracts</span><input type="number" min="1" step="1" bind:value={slipSlice} /></label>{/if}
       </div>
       <div class="slip-summary"><span>Estimated contracts <b>{qty(slipQuantity)}</b></span><span>Fee-adjusted cap <b>{ml(Number(slipCap))}</b></span></div>
+      {#if slipOverCap}<p class="slip-status" role="alert">Cash at risk is above this server's per-order cap of {money(snapshot.health.maxCashRisk || 0)}.</p>{/if}
       {#if slipStrategy === 'follow'}<p class="slip-status">Joins the live top bid, stays post-only, and pauses at your all-in cap or on stale data.</p>{/if}
-	  <button class="submit-order" disabled={!snapshot.health.tradingEnabled || !slipPrice || Number(slipRisk) <= 0} on:click={submitOrder}>{snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'Review & place real order' : 'Place demo order' : 'Trading locked'}</button>
+	  <button class="submit-order" disabled={!snapshot.health.tradingEnabled || !slipPrice || Number(slipRisk) <= 0 || slipOverCap} on:click={submitOrder}>{snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'Review & place real order' : 'Place demo order' : 'Trading locked'}</button>
       {#if slipStatus}<p class="slip-status" aria-live="polite">{slipStatus}</p>{/if}
     </aside>
   {/if}

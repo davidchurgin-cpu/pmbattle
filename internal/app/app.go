@@ -30,6 +30,9 @@ type Config struct {
 	ExchangeEnvironment string
 	Simulated           bool
 	TradingEnabled      bool
+	// MaxCashRisk lowers the per-order cash-risk ceiling. Zero means the
+	// engine default. It can never exceed orders.DefaultMaxCashRisk.
+	MaxCashRisk domain.Money
 }
 
 type Service struct {
@@ -60,7 +63,8 @@ func New(cfg Config, store *storage.Store, adapter exchange.Adapter) *Service {
 	} else if strings.EqualFold(cfg.ExchangeEnvironment, "demo") {
 		mode = "demo"
 	}
-	s.snapshot.Health = domain.Health{Status: "starting", Mode: mode, ExchangeState: "disconnected", AccountState: "pending", TradingEnabled: cfg.TradingEnabled, TradingLock: tradingLockReason(cfg, mode)}
+	s.orderEngine.SetMaxCashRisk(cfg.MaxCashRisk)
+	s.snapshot.Health = domain.Health{Status: "starting", Mode: mode, ExchangeState: "disconnected", AccountState: "pending", TradingEnabled: cfg.TradingEnabled, TradingLock: tradingLockReason(cfg, mode), MaxCashRisk: s.orderEngine.MaxCashRisk()}
 	s.snapshot.ParentOrders = make([]domain.ParentOrder, 0)
 	return s
 }

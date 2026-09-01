@@ -171,3 +171,17 @@ func TestSecurityHeadersAndCrossOriginWebSocketRejection(t *testing.T) {
 		t.Fatal("cross-origin websocket request was accepted")
 	}
 }
+
+func TestHealthReportsLoweredPerOrderCap(t *testing.T) {
+	service := app.New(app.Config{ExchangeEnvironment: "production", MaxCashRisk: 25 * domain.Dollar}, nil, nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	response := httptest.NewRecorder()
+	New(service, nil).Handler().ServeHTTP(response, request)
+	var health domain.Health
+	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	if health.MaxCashRisk != 25*domain.Dollar {
+		t.Fatalf("health cap %d, want %d", health.MaxCashRisk, 25*domain.Dollar)
+	}
+}

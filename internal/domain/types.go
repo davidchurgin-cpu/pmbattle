@@ -264,6 +264,7 @@ type Health struct {
 	LatencyMS       int64     `json:"latencyMs"`
 	TradingEnabled  bool      `json:"tradingEnabled"`
 	TradingLock     string    `json:"tradingLock,omitempty"`
+	MaxCashRisk     Money     `json:"maxCashRisk"`
 }
 
 type Preferences struct {

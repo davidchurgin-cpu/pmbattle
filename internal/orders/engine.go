@@ -15,7 +15,9 @@ import (
 	"github.com/davidchurgin-cpu/pmbattle/internal/pricing"
 )
 
-const MaxDemoCashRisk = 20_000 * domain.Dollar
+// DefaultMaxCashRisk is the hard ceiling for one parent order. Operators can
+// lower it with PMBATTLE_MAX_CASH_RISK but never raise it above this value.
+const DefaultMaxCashRisk = 20_000 * domain.Dollar
 
 const FollowRepriceInterval = 750 * time.Millisecond
 
@@ -23,6 +25,7 @@ var (
 	ErrDisabled            = errors.New("demo trading is disabled")
 	ErrUnsupportedStrategy = errors.New("strategy is not available in this demo release")
 	ErrInvalidOrder        = errors.New("invalid parent order")
+	ErrCashRiskCap         = errors.New("cash risk exceeds the per-order cap set on this server")
 	ErrPriceCap            = errors.New("fee-adjusted price exceeds the parent order cap")
 	ErrNotFound            = errors.New("parent order not found")
 	ErrNotResumable        = errors.New("parent order is not a paused follow order with an active child")
@@ -57,15 +60,33 @@ type CreateRequest struct {
 }
 
 type Engine struct {
-	mu      sync.RWMutex
-	enabled bool
-	exec    Executor
-	parents map[string]domain.ParentOrder
-	now     func() time.Time
+	mu          sync.RWMutex
+	enabled     bool
+	exec        Executor
+	maxCashRisk domain.Money
+	parents     map[string]domain.ParentOrder
+	now         func() time.Time
 }
 
 func New(enabled bool, executor Executor) *Engine {
-	return &Engine{enabled: enabled, exec: executor, parents: make(map[string]domain.ParentOrder), now: func() time.Time { return time.Now().UTC() }}
+	return &Engine{enabled: enabled, exec: executor, maxCashRisk: DefaultMaxCashRisk, parents: make(map[string]domain.ParentOrder), now: func() time.Time { return time.Now().UTC() }}
+}
+
+// SetMaxCashRisk lowers the per-order cash-risk ceiling. Values at or below
+// zero or above DefaultMaxCashRisk are clamped to the default.
+func (e *Engine) SetMaxCashRisk(limit domain.Money) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if limit <= 0 || limit > DefaultMaxCashRisk {
+		limit = DefaultMaxCashRisk
+	}
+	e.maxCashRisk = limit
+}
+
+func (e *Engine) MaxCashRisk() domain.Money {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.maxCashRisk
 }
 
 func (e *Engine) Restore(parents []domain.ParentOrder) {
@@ -120,8 +141,11 @@ func (e *Engine) Create(ctx context.Context, request CreateRequest) (domain.Pare
 	if request.Strategy != "basic" && request.Strategy != "iceberg" && request.Strategy != "follow" {
 		return domain.ParentOrder{}, domain.Order{}, ErrUnsupportedStrategy
 	}
-	if request.Ticker == "" || request.EventID == "" || request.Outcome == "" || request.Market == "" || request.Side != "yes" && request.Side != "no" || request.LimitPrice <= 0 || request.LimitPrice >= domain.Dollar || request.CashRisk < domain.Dollar || request.CashRisk > MaxDemoCashRisk {
+	if request.Ticker == "" || request.EventID == "" || request.Outcome == "" || request.Market == "" || request.Side != "yes" && request.Side != "no" || request.LimitPrice <= 0 || request.LimitPrice >= domain.Dollar || request.CashRisk < domain.Dollar {
 		return domain.ParentOrder{}, domain.Order{}, ErrInvalidOrder
+	}
+	if request.CashRisk > e.MaxCashRisk() {
+		return domain.ParentOrder{}, domain.Order{}, ErrCashRiskCap
 	}
 	timeInForce, postOnly, ok := policy(request.Policy)
 	if !ok || (request.Strategy == "iceberg" || request.Strategy == "follow") && request.Policy == "ioc" {

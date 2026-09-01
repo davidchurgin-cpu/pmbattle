@@ -380,3 +380,33 @@ func TestPausedFollowRequiresManualResumeAndFreshRevalidation(t *testing.T) {
 		t.Fatalf("disabled engine resume got %v", err)
 	}
 }
+
+func TestPerOrderCashRiskCapIsEnforcedAndClamped(t *testing.T) {
+	engine := New(true, &fakeExecutor{})
+	if engine.MaxCashRisk() != DefaultMaxCashRisk {
+		t.Fatalf("default cap %d, want %d", engine.MaxCashRisk(), DefaultMaxCashRisk)
+	}
+	over := validRequest()
+	over.CashRisk = DefaultMaxCashRisk + domain.Dollar
+	if _, _, err := engine.Create(context.Background(), over); !errors.Is(err, ErrCashRiskCap) {
+		t.Fatalf("default cap not enforced: %v", err)
+	}
+	engine.SetMaxCashRisk(25 * domain.Dollar)
+	request := validRequest()
+	request.CashRisk = 26 * domain.Dollar
+	if _, _, err := engine.Create(context.Background(), request); !errors.Is(err, ErrCashRiskCap) {
+		t.Fatalf("lowered cap not enforced: %v", err)
+	}
+	request.CashRisk = 25 * domain.Dollar
+	if _, _, err := engine.Create(context.Background(), request); err != nil {
+		t.Fatalf("order at the cap should be accepted: %v", err)
+	}
+	engine.SetMaxCashRisk(DefaultMaxCashRisk * 2)
+	if engine.MaxCashRisk() != DefaultMaxCashRisk {
+		t.Fatalf("cap above the hard ceiling was not clamped: %d", engine.MaxCashRisk())
+	}
+	engine.SetMaxCashRisk(0)
+	if engine.MaxCashRisk() != DefaultMaxCashRisk {
+		t.Fatalf("zero cap was not clamped to default: %d", engine.MaxCashRisk())
+	}
+}

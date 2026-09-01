@@ -14,7 +14,10 @@ import (
 	"time"
 
 	"github.com/davidchurgin-cpu/pmbattle/internal/app"
+	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
+	"github.com/davidchurgin-cpu/pmbattle/internal/fixed"
 	"github.com/davidchurgin-cpu/pmbattle/internal/kalshi"
+	"github.com/davidchurgin-cpu/pmbattle/internal/orders"
 	"github.com/davidchurgin-cpu/pmbattle/internal/server"
 	"github.com/davidchurgin-cpu/pmbattle/internal/storage"
 )
@@ -54,12 +57,21 @@ func main() {
 		os.Exit(1)
 	}
 	tradingEnabled := tradingRequested && !simulated
+	maxCashRisk := domain.Money(0)
+	if raw := env("PMBATTLE_MAX_CASH_RISK", ""); raw != "" {
+		parsed, err := fixed.Parse(raw)
+		if err != nil || parsed < domain.Dollar || parsed > orders.DefaultMaxCashRisk {
+			slog.Error("PMBATTLE_MAX_CASH_RISK must be a dollar amount between 1 and 20000", "value", raw)
+			os.Exit(1)
+		}
+		maxCashRisk = parsed
+	}
 	kalshiClient, err := kalshi.New(kalshi.Config{Environment: kalshiEnvironment, KeyID: os.Getenv("PMBATTLE_KALSHI_KEY_ID"), PrivateKeyPath: os.Getenv("PMBATTLE_KALSHI_PRIVATE_KEY_PATH"), TradingEnabled: tradingEnabled})
 	if err != nil {
 		slog.Error("configure Kalshi", "error", err)
 		os.Exit(1)
 	}
-	service := app.New(app.Config{ScheduleURL: env("PMBATTLE_SCHEDULE_URL", "http://linefeednew.spankodds.com/supportSystem/rawschedule_v2_expanded.xml"), ScheduleInterval: interval, MarketInterval: marketInterval, ExchangeEnvironment: kalshiEnvironment, Simulated: simulated, TradingEnabled: tradingEnabled}, store, kalshiClient)
+	service := app.New(app.Config{ScheduleURL: env("PMBATTLE_SCHEDULE_URL", "http://linefeednew.spankodds.com/supportSystem/rawschedule_v2_expanded.xml"), ScheduleInterval: interval, MarketInterval: marketInterval, ExchangeEnvironment: kalshiEnvironment, Simulated: simulated, TradingEnabled: tradingEnabled, MaxCashRisk: maxCashRisk}, store, kalshiClient)
 	static, _ := fs.Sub(webAssets, "web/dist")
 	httpServer := &http.Server{Addr: env("PMBATTLE_ADDR", ":8080"), Handler: server.New(service, static).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go service.Run(ctx)
