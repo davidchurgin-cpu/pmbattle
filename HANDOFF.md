@@ -69,7 +69,7 @@ Open `http://127.0.0.1:8080/`. Use `PMBATTLE_TRADING_ENABLED=false` for read-onl
 ## Important operational details
 
 - The office server's existing IP allowlist remains the access boundary. PMBattle should sit behind its normal TLS/reverse-proxy setup.
-- The Settings safety panel is informational only and cannot arm trading. It surfaces environment, feed/account sync, last account refresh, mapped markets, available cash, cash at risk, and the immutable startup lock reason.
+- The Settings safety panel is informational only and cannot arm trading. It surfaces environment, feed/account sync, last account refresh, mapped markets, available cash, cash at risk, and the immutable startup lock reason. When trading is enabled, its note and the Orders-tray kill switch label now say whether real production orders or demo orders are armed; an earlier version wrongly said production was still blocked.
 - History separates exchange settlements from System audit. Audit records are never included in the startup snapshot or WebSocket stream; opening that subview requests the newest 100 records, and Load earlier follows the opaque numeric cursor. Each row has a compact lifecycle summary and a collapsible exact JSON payload.
 - Use a dedicated server directory for `pmbattle.db` and back it up normally.
 - Use the server's secret/environment manager for the Kalshi key ID and PEM path.
