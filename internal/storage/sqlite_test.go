@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -95,5 +96,34 @@ func TestSettlementsRoundTripAndExchangeCursor(t *testing.T) {
 	got, _ = store.LoadSettlements(ctx, 3)
 	if got[1].Ticker != "B" || got[1].NetPnL != want[1].NetPnL {
 		t.Fatalf("settlement upsert failed %+v", got)
+	}
+}
+
+func TestAuditHistoryIsNewestFirstAndCursorBounded(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "audit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	for _, item := range []struct {
+		kind string
+		id   string
+	}{{"requested", "one"}, {"acknowledged", "two"}, {"filled", "three"}} {
+		if err := store.Audit(ctx, item.kind, map[string]string{"id": item.id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := store.LoadAudit(ctx, 0, 2)
+	if err != nil || len(first) != 2 || first[0].Kind != "filled" || first[1].Kind != "acknowledged" || first[0].ID <= first[1].ID {
+		t.Fatalf("unexpected first audit page %+v err=%v", first, err)
+	}
+	second, err := store.LoadAudit(ctx, first[1].ID, 2)
+	if err != nil || len(second) != 1 || second[0].Kind != "requested" {
+		t.Fatalf("unexpected second audit page %+v err=%v", second, err)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(second[0].Payload, &payload); err != nil || payload["id"] != "one" {
+		t.Fatalf("unexpected audit payload %s err=%v", second[0].Payload, err)
 	}
 }

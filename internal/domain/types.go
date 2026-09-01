@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Money int64 // fixed-point ten-thousandths of a dollar
 
@@ -213,6 +216,13 @@ type Settlement struct {
 	NetPnL          Money     `json:"netPnl"`
 	SettlementValue Money     `json:"settlementValue"`
 	SettledAt       time.Time `json:"settledAt"`
+}
+
+type AuditRecord struct {
+	ID         int64           `json:"id"`
+	OccurredAt time.Time       `json:"occurredAt"`
+	Kind       string          `json:"kind"`
+	Payload    json.RawMessage `json:"payload"`
 }
 
 type Health struct {

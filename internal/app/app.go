@@ -182,6 +182,34 @@ type CancelScopeResult struct {
 	Failures []CancelFailure      `json:"failures"`
 }
 
+type AuditPage struct {
+	Records    []domain.AuditRecord `json:"records"`
+	NextBefore int64                `json:"nextBefore,omitempty"`
+	HasMore    bool                 `json:"hasMore"`
+}
+
+func (s *Service) AuditHistory(ctx context.Context, beforeID int64, limit int) (AuditPage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	records, err := s.store.LoadAudit(ctx, beforeID, limit+1)
+	if err != nil {
+		return AuditPage{}, err
+	}
+	page := AuditPage{Records: records}
+	if len(records) > limit {
+		page.HasMore = true
+		page.Records = records[:limit]
+	}
+	if len(page.Records) > 0 {
+		page.NextBefore = page.Records[len(page.Records)-1].ID
+	}
+	return page, nil
+}
+
 func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrderInput) (domain.ParentOrder, error) {
 	// Serialize parent creation so two browser requests cannot both spend the
 	// same available balance before either exchange acknowledgement is applied.

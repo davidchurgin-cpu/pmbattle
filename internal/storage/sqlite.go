@@ -167,6 +167,46 @@ func (s *Store) Audit(ctx context.Context, kind string, value any) error {
 	return err
 }
 
+func (s *Store) LoadAudit(ctx context.Context, beforeID int64, limit int) ([]domain.AuditRecord, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	// One extra row lets the service report whether another page exists while
+	// the public API still caps each returned page at 200 records.
+	if limit > 201 {
+		limit = 201
+	}
+	query := `SELECT id,occurred_at,kind,payload FROM audit_log`
+	args := make([]any, 0, 2)
+	if beforeID > 0 {
+		query += ` WHERE id < ?`
+		args = append(args, beforeID)
+	}
+	query += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := make([]domain.AuditRecord, 0, limit)
+	for rows.Next() {
+		var record domain.AuditRecord
+		var occurred string
+		var payload []byte
+		if err := rows.Scan(&record.ID, &occurred, &record.Kind, &payload); err != nil {
+			return nil, err
+		}
+		record.OccurredAt, err = time.Parse(time.RFC3339Nano, occurred)
+		if err != nil {
+			return nil, fmt.Errorf("parse audit time: %w", err)
+		}
+		record.Payload = append(json.RawMessage(nil), payload...)
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
 func (s *Store) SaveParentOrder(ctx context.Context, parent domain.ParentOrder) error {
 	payload, err := json.Marshal(parent)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/snapshot", s.snapshot)
 	mux.HandleFunc("GET /api/settings", s.settings)
+	mux.HandleFunc("GET /api/audit", s.audit)
 	mux.HandleFunc("PUT /api/settings", s.updateSettings)
 	mux.HandleFunc("GET /api/books/{ticker}", s.book)
 	mux.HandleFunc("DELETE /api/books/{ticker}", s.releaseBook)
@@ -53,6 +55,35 @@ func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.service.Snapshot().Settings)
+}
+func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
+	before, err := parseNonnegativeInt64(r.URL.Query().Get("before"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid audit cursor"})
+		return
+	}
+	limit, err := parseNonnegativeInt64(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid audit limit"})
+		return
+	}
+	page, err := s.service.AuditHistory(r.Context(), before, int(limit))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to load audit history"})
+		return
+	}
+	writeJSON(w, http.StatusOK, page)
+}
+
+func parseNonnegativeInt64(value string) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 0 {
+		return 0, errors.New("value must be a nonnegative integer")
+	}
+	return parsed, nil
 }
 func (s *Server) updateSettings(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)

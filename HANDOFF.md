@@ -28,6 +28,7 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 no
 - `GET /api/books/{ticker}` — select the UI order book; returns `202` while its first live snapshot is opening
 - `DELETE /api/books/{ticker}` — release the UI book when the game dropdown closes; strategy-required books remain subscribed
 - `GET /api/settings` — available sports, event counts, and saved preferences
+- `GET /api/audit?limit=100&before={id}` — newest-first immutable audit records, loaded on demand and capped at 200 per page
 - `PUT /api/settings` — save enabled sports and refresh the schedule and exchange subscriptions
 - `POST /api/parent-orders` — create a cash-risk-bounded basic, iceberg, or follow order; returns `403` unless explicitly enabled in Kalshi demo mode
 - `DELETE /api/parent-orders/{id}` — cancel every child of a demo parent order; also locked outside demo mode
@@ -41,6 +42,7 @@ The mutation routes are present for demo validation but are inert by default. St
 
 - The office server's existing IP allowlist remains the access boundary. PMBattle should sit behind its normal TLS/reverse-proxy setup.
 - The Settings safety panel is informational only and cannot arm trading. It surfaces environment, feed/account sync, last account refresh, mapped markets, available cash, cash at risk, and the immutable startup lock reason.
+- History separates exchange settlements from System audit. Audit records are never included in the startup snapshot or WebSocket stream; opening that subview requests the newest 100 records, and Load earlier follows the opaque numeric cursor. Each row has a compact lifecycle summary and a collapsible exact JSON payload.
 - Use a dedicated server directory for `pmbattle.db` and back it up normally.
 - Use the server's secret/environment manager for the Kalshi key ID and PEM path.
 - Start with Kalshi demo. Confirm the health indicator and market mappings before considering production data.
@@ -84,6 +86,7 @@ The mutation routes are present for demo validation but are inert by default. St
 - Follow has automated coverage with a fake demo adapter and the current V2 amend contract, but it has not yet been manually exercised with separate Kalshi demo credentials. Production remains hard locked.
 - The shared-bankroll gate is process-local and currently covers the single Kalshi adapter. Cross-process or multi-exchange reservation requires the future routing coordinator and must not be inferred from this first-exchange guard.
 - Completed parents are retained in SQLite without pruning yet. A retention policy will be needed as history grows.
+- Audit records are append-only and paginated but do not yet have a retention/archive policy; server operators should include `pmbattle.db` in normal backups.
 - Open-position and settlement restart reconciliation has recorded multi-page fixture coverage and was smoke-tested read-only against production on August 31, 2026: 7 open positions, 5 resting orders, and 50 recent settlements rendered successfully. The displayed $62,989.94 cash at risk exactly matched position exposure plus resting-order risk; trading remained disabled.
 - The shared-bankroll/safety release was smoke-tested read-only against production on August 31, 2026: account state `READY`, 441 mapped markets, $213,074.64 available/new-order capacity, and $62,989.94 cash at risk rendered in Settings. The server and UI both reported `Production order entry is hard-locked`; no mutation endpoint was invoked.
 - Production mutation is intentionally impossible and must remain so unless a separate review is completed and the user explicitly authorizes real-money trading.
@@ -107,7 +110,7 @@ GitHub Actions runs these checks and publishes portable Windows/Linux binaries o
 
 ## Lightweight checkpoint
 
-- Browser production bundle: about 82.9 KB JavaScript and 21.8 KB CSS before gzip; there are no runtime browser dependencies beyond Svelte.
+- Browser production bundle: about 85.5 KB JavaScript and 23.2 KB CSS before gzip; there are no runtime browser dependencies beyond Svelte.
 - Production source maps are disabled and old side-panel CSS/dead book code were removed.
 - Runtime background work is bounded: one 30-second schedule ticker, one 30-second authenticated account-reconciliation ticker, one account stream, and one consolidated order-book stream containing only the selected UI book plus active follow books.
 - The stripped single Windows executable is about 12.0 MB, primarily because it embeds the pure-Go SQLite implementation and the complete browser app; deployment still requires only that one executable.

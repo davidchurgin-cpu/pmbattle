@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { AccountSnapshot, AccountSummary, BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
+  import type { AccountSnapshot, AccountSummary, AuditPage, AuditRecord, BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
 
   let snapshot: Snapshot = { events: [], parentOrders: [], orders: [], positions: [], settlements: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', accountState: 'pending', mappedMarkets: 0, latencyMs: 0, tradingEnabled: false }, bankroll: 0, availableToAllocate: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
   let view: 'schedule' | 'settings' = 'schedule'
@@ -37,6 +37,12 @@
   let book: OrderBook | null = null
   let trayOpen = true
   let trayTab: 'orders' | 'positions' | 'fills' | 'history' = 'fills'
+  let historyMode: 'settlements' | 'audit' = 'settlements'
+  let auditRecords: AuditRecord[] = []
+  let auditNextBefore = 0
+  let auditHasMore = false
+  let auditLoading = false
+  let auditError = ''
   let theme: 'light' | 'dark' = (localStorage.getItem('pmbattle-theme') as 'light' | 'dark') || 'dark'
   let error = ''
 
@@ -101,6 +107,29 @@
   function toggleMonitor() { monitorOpen = !monitorOpen; if (monitorOpen) unreadFills = 0 }
   function showActivity(tab: 'orders' | 'fills') { trayTab = tab; trayOpen = true; unreadFills = 0 }
   function viewFill(key: string) { dismissNotice(key); monitorOpen = true; unreadFills = 0 }
+  async function showHistory(mode: 'settlements' | 'audit') {
+    trayTab = 'history'; trayOpen = true; historyMode = mode
+    if (mode === 'audit' && auditRecords.length === 0) await loadAudit(true)
+  }
+  async function loadAudit(reset = false) {
+    if (auditLoading) return
+    auditLoading = true; auditError = ''
+    try {
+      const before = reset ? 0 : auditNextBefore
+      const response = await fetch(`/api/audit?limit=100${before ? `&before=${before}` : ''}`)
+      if (!response.ok) throw new Error('Unable to load audit history')
+      const page = await response.json() as AuditPage
+      auditRecords = reset ? (page.records || []) : [...auditRecords, ...(page.records || [])]
+      auditNextBefore = page.nextBefore || 0; auditHasMore = page.hasMore
+    } catch (cause) { auditError = cause instanceof Error ? cause.message : 'Unable to load audit history' }
+    finally { auditLoading = false }
+  }
+  const auditTitle = (kind: string) => kind.replaceAll('_', ' ')
+  function auditSummary(record: AuditRecord) {
+    const payload = record.payload as Record<string, any>
+    const item = payload.parent || payload.request || payload.fill || payload
+    return [item.id || item.parentId, item.ticker, item.strategy, item.status, payload.error || payload.strategy_error].filter(Boolean).join(' · ') || 'Recorded state change'
+  }
 
   $: sports = ['ALL', ...new Set(snapshot.events.map(event => event.sport.toUpperCase()))]
   $: leagues = ['ALL', ...new Set(snapshot.events.filter(event => selectedSport === 'ALL' || event.sport.toUpperCase() === selectedSport).map(event => event.league.toUpperCase()))]
@@ -332,7 +361,7 @@
       <button class:active={trayTab === 'positions'} on:click={() => { trayTab = 'positions'; trayOpen = true }}>Positions ({snapshot.positions.length})</button>
       <button class:active={trayTab === 'orders'} on:click={() => { trayTab = 'orders'; trayOpen = true }}>Orders ({snapshot.orders.length})</button>
       <button class:active={trayTab === 'fills'} on:click={() => { trayTab = 'fills'; trayOpen = true }}>Live fills</button>
-      <button class:active={trayTab === 'history'} on:click={() => { trayTab = 'history'; trayOpen = true }}>History ({snapshot.settlements.length})</button>
+      <button class:active={trayTab === 'history'} on:click={() => showHistory('settlements')}>History ({snapshot.settlements.length})</button>
       <button class="tray-toggle" on:click={() => trayOpen = !trayOpen}>{trayOpen ? 'Collapse ↓' : 'Open ↑'}</button>
     </div>
     {#if trayOpen}<div class="tray-body">
@@ -346,8 +375,17 @@
         <div class="table-head"><span>Market</span><span>Exchange</span><span>Side / quantity</span><span>Exposure</span><span>Traded</span><span>Fees</span><span>Realized P&amp;L</span></div>
         {#each snapshot.positions as position}<div class="table-row compact"><span><b>{position.rotation ? `#${position.rotation} ` : ''}{position.market}</b><small>{position.ticker}</small></span><span>{position.exchange}</span><span>{(position.side || 'yes').toUpperCase()} · {qty(Math.abs(position.quantity))}</span><span>{money(position.cashRisk)}</span><span>{money(position.totalTraded || 0)}</span><span>{money(position.feesPaid || 0)}</span><span class:positive={(position.realizedPnl || 0) >= 0} class:negative={(position.realizedPnl || 0) < 0}>{money(position.realizedPnl || 0)}</span></div>{:else}<div class="empty">No open positions</div>{/each}
       {:else}
-        <div class="table-head"><span>Settled / market</span><span>Exchange</span><span>Result</span><span>Yes / No</span><span>Revenue</span><span>Fees</span><span>Net P&amp;L</span></div>
-        {#each snapshot.settlements as settlement}<div class="table-row compact"><span><b>{new Date(settlement.settledAt).toLocaleString()}{settlement.rotation ? ` · #${settlement.rotation}` : ''}</b><small>{settlement.market || settlement.ticker}</small></span><span>{settlement.exchange}</span><span>{settlement.result.toUpperCase()}</span><span>{qty(settlement.yesQuantity)} / {qty(settlement.noQuantity)}</span><span>{money(settlement.revenue)}</span><span>{money(settlement.fee)}</span><span class:positive={settlement.netPnl >= 0} class:negative={settlement.netPnl < 0}>{money(settlement.netPnl)}</span></div>{:else}<div class="empty">No settled markets yet</div>{/each}
+        <div class="history-switch"><button class:active={historyMode === 'settlements'} on:click={() => showHistory('settlements')}>Settlements</button><button class:active={historyMode === 'audit'} on:click={() => showHistory('audit')}>System audit</button><span>{historyMode === 'audit' ? 'Loaded only when opened' : 'Exchange results'}</span></div>
+        {#if historyMode === 'settlements'}
+          <div class="table-head"><span>Settled / market</span><span>Exchange</span><span>Result</span><span>Yes / No</span><span>Revenue</span><span>Fees</span><span>Net P&amp;L</span></div>
+          {#each snapshot.settlements as settlement}<div class="table-row compact"><span><b>{new Date(settlement.settledAt).toLocaleString()}{settlement.rotation ? ` · #${settlement.rotation}` : ''}</b><small>{settlement.market || settlement.ticker}</small></span><span>{settlement.exchange}</span><span>{settlement.result.toUpperCase()}</span><span>{qty(settlement.yesQuantity)} / {qty(settlement.noQuantity)}</span><span>{money(settlement.revenue)}</span><span>{money(settlement.fee)}</span><span class:positive={settlement.netPnl >= 0} class:negative={settlement.netPnl < 0}>{money(settlement.netPnl)}</span></div>{:else}<div class="empty">No settled markets yet</div>{/each}
+        {:else}
+          <div class="audit-list">
+            {#each auditRecords as record (record.id)}<article><span><b>{new Date(record.occurredAt).toLocaleString()}</b><small>Record #{record.id}</small></span><span><b>{auditTitle(record.kind)}</b><small>{auditSummary(record)}</small></span><details><summary>Details</summary><pre>{JSON.stringify(record.payload, null, 2)}</pre></details></article>{:else}{#if !auditLoading}<div class="empty">No order activity has been audited yet</div>{/if}{/each}
+          </div>
+          {#if auditError}<div class="error" role="alert">{auditError}</div>{/if}
+          {#if auditLoading}<div class="audit-more">Loading audit history…</div>{:else if auditHasMore}<div class="audit-more"><button on:click={() => loadAudit(false)}>Load earlier records</button></div>{/if}
+        {/if}
       {/if}
     </div>{/if}
   </section>

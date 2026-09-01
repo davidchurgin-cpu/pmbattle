@@ -36,6 +36,7 @@ The production connection is deliberately **read-only**. The terminal includes t
 - Sequence-checked in-memory order books with stale-book detection
 - Live browser stream for books, health, fills, orders, positions, and reconciled settlement history
 - SQLite WAL persistence for schedules, mappings, settings, settlements, parent orders, and audit records
+- On-demand System audit history for order requests, acknowledgements, rejections, fills, risk reconciliation, follow decisions, resumes, and cancellations; cursor paging keeps it out of the live snapshot
 - Standard light and dark themes
 - Persisted Settings tab for enabling only the sports you want to load and subscribe to
 - Optional filter for six-digit extra/added games with lower market limits
