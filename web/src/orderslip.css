@@ -13,7 +13,7 @@
 .order-slip {
   position: fixed;
   right: 14px;
-  bottom: 14px;
+  bottom: 56px;
   z-index: 30;
   width: min(360px, calc(100vw - 20px));
   overflow: hidden;
@@ -53,5 +53,5 @@
 .slip-status { margin: 0; padding: 0 11px 10px; color: var(--muted); font-size: 9px; }
 
 @media (max-width: 560px) {
-  .order-slip { right: 5px; bottom: 5px; width: calc(100vw - 10px); }
+  .order-slip { right: 5px; bottom: 51px; width: calc(100vw - 10px); }
 }

@@ -38,6 +38,10 @@ func main() {
 	if err != nil {
 		interval = 30 * time.Second
 	}
+	marketInterval, err := time.ParseDuration(env("PMBATTLE_MARKET_INTERVAL", "5m"))
+	if err != nil {
+		marketInterval = 5 * time.Minute
+	}
 	simulated := strings.EqualFold(env("PMBATTLE_SIMULATED", "true"), "true")
 	kalshiEnvironment := env("PMBATTLE_KALSHI_ENV", "demo")
 	tradingRequested := strings.EqualFold(env("PMBATTLE_TRADING_ENABLED", "false"), "true")
@@ -51,7 +55,7 @@ func main() {
 		slog.Error("configure Kalshi", "error", err)
 		os.Exit(1)
 	}
-	service := app.New(app.Config{ScheduleURL: env("PMBATTLE_SCHEDULE_URL", "http://linefeednew.spankodds.com/supportSystem/rawschedule_v2_expanded.xml"), ScheduleInterval: interval, ExchangeEnvironment: kalshiEnvironment, Simulated: simulated, DemoTrading: demoTrading}, store, kalshiClient)
+	service := app.New(app.Config{ScheduleURL: env("PMBATTLE_SCHEDULE_URL", "http://linefeednew.spankodds.com/supportSystem/rawschedule_v2_expanded.xml"), ScheduleInterval: interval, MarketInterval: marketInterval, ExchangeEnvironment: kalshiEnvironment, Simulated: simulated, DemoTrading: demoTrading}, store, kalshiClient)
 	static, _ := fs.Sub(webAssets, "web/dist")
 	httpServer := &http.Server{Addr: env("PMBATTLE_ADDR", ":8080"), Handler: server.New(service, static).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go service.Run(ctx)

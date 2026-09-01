@@ -1,47 +1,3 @@
-.order-monitor {
-  position: fixed;
-  left: 14px;
-  bottom: 14px;
-  z-index: 28;
-  width: min(390px, calc(100vw - 20px));
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: var(--panel);
-  box-shadow: 0 10px 34px rgb(0 0 0 / 20%);
-}
-
-.monitor-toggle {
-  display: grid;
-  grid-template-columns: auto auto 1fr auto;
-  gap: 9px;
-  align-items: center;
-  width: 100%;
-  padding: 9px 11px;
-  border: 0;
-  background: var(--panel);
-  color: var(--text);
-  text-align: left;
-  cursor: pointer;
-}
-
-.monitor-toggle b { font-size: 11px; }
-.monitor-toggle small { overflow: hidden; color: var(--muted); font-size: 9px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
-.monitor-toggle em { justify-self: end; padding: 2px 5px; border-radius: 10px; background: var(--ask); color: #fff; font-size: 8px; font-style: normal; font-weight: 700; }
-.monitor-live { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 8px; letter-spacing: .05em; }
-.monitor-live i { width: 6px; height: 6px; border-radius: 50%; background: var(--bid); }
-
-.monitor-body { max-height: 330px; overflow: auto; border-top: 1px solid var(--line); }
-.monitor-body header { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; background: var(--panel-2); }
-.monitor-body header b { font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
-.monitor-body header button { border: 0; background: transparent; color: var(--accent); font-size: 9px; cursor: pointer; }
-.monitor-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 8px 10px; border-top: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
-.monitor-row:first-of-type { border-top: 0; }
-.monitor-row > span:last-child { text-align: right; }
-.monitor-row b, .monitor-row small { display: block; }
-.monitor-row b { overflow: hidden; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.monitor-row small { margin-top: 2px; color: var(--muted); font-size: 8px; }
-.monitor-row.fill { border-left: 2px solid var(--bid); }
 .order-risk { display: flex; gap: 6px; align-items: center; justify-content: space-between; }
 .cancel-order { border: 1px solid color-mix(in srgb, var(--ask) 55%, var(--line)); border-radius: 4px; background: transparent; color: var(--ask); padding: 4px 6px; font: inherit; cursor: pointer; }
 .cancel-order:hover:not(:disabled) { background: color-mix(in srgb, var(--ask) 10%, transparent); }
@@ -49,9 +5,6 @@
 .resume-order { border: 1px solid color-mix(in srgb, var(--bid) 60%, var(--line)); border-radius: 4px; background: transparent; color: var(--bid); padding: 4px 6px; font: inherit; cursor: pointer; }
 .resume-order:hover:not(:disabled) { background: color-mix(in srgb, var(--bid) 10%, transparent); }
 .resume-order:disabled { cursor: wait; opacity: .55; }
-.monitor-actions { display: flex; gap: 5px; align-items: center; }
-.monitor-empty { padding: 14px; color: var(--muted); font-size: 9px; text-align: center; }
-
 .cancel-scope-bar { display: grid; grid-template-columns: auto minmax(150px, 220px) auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 7px 10px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
 .cancel-scope-bar b { color: var(--ask); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
 .cancel-scope-bar select { min-width: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--input); color: var(--text); padding: 5px 7px; font: inherit; }
@@ -92,8 +45,6 @@
 .fill-notice .notice-close { padding: 2px 5px; border: 0; background: transparent; color: var(--muted); font-size: 16px; }
 
 @media (max-width: 760px) {
-  .order-monitor { left: 5px; bottom: 5px; width: calc(100vw - 10px); }
-  .order-slip { bottom: 54px; }
   .fill-notices { top: 8px; right: 5px; width: calc(100vw - 10px); }
   .cancel-scope-bar { grid-template-columns: 1fr auto; }
   .cancel-scope-bar b, .cancel-scope-bar small { grid-column: 1 / -1; }

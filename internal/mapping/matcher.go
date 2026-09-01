@@ -155,6 +155,7 @@ func canonicalTeam(value string) string {
 		"umass": "massachusetts", "uconn": "connecticut", "ole miss": "mississippi",
 		"lsu": "louisiana state", "ucf": "central florida", "smu": "southern methodist",
 		"tcu": "texas christian", "byu": "brigham young", "nc state": "north carolina state",
+		"louisiana monroe": "ul monroe", "mississippi st": "mississippi state", "hawai i": "hawaii",
 	}
 	for alias, replacement := range aliases {
 		value = strings.ReplaceAll(value, " "+alias+" ", " "+replacement+" ")

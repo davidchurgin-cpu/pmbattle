@@ -9,6 +9,7 @@ The production connection is deliberately **read-only**. The terminal includes t
 - Schedule ingestion from `rawschedule_v2_expanded.xml` every 30 seconds
 - Normalized sports, leagues, games, rotation numbers, teams, start times, and scores
 - Conservative Kalshi market matching with uncertain matches hidden from the board
+- Automatic Kalshi catalog refresh every five minutes so newly listed markets appear without a server restart
 - On-demand Settings review for ambiguous mappings, grouped by related Kalshi contracts; approvals are limited to evidence-backed schedule candidates and rejections persist across refreshes
 - Fixed-point money and fee calculations; no floating point is used for order cost or fees
 - Fee-adjusted American moneylines as the primary displayed price
@@ -33,7 +34,8 @@ The production connection is deliberately **read-only**. The terminal includes t
 - Exchange-neutral smart-routing planner allocates one parent cash-risk target across venue balances and fee-included liquidity in best-price order, shares each venue's bankroll across its levels, and reports any safely unallocated remainder
 - Available cash, new-order capacity, and cash at risk update in the browser before a live fill notification is displayed
 - A compact Settings safety panel shows environment, exchange/account state, last reconciliation, mapped-market count, available trading balance, cash at risk, and the server-controlled order-entry lock
-- Always-visible dashboard order monitor with working quantities and recent fills, plus immediate visual alerts for every newly streamed full or partial fill
+- Fixed bottom activity dock with always-visible position/order/fill counts, working-order status, and expandable detail tables, plus immediate visual alerts for every newly streamed full or partial fill
+- Compact full-width sportsbook rows; genuinely absent market types say `Not listed`, while listed contracts without an offer say `Listed · no offer`
 - Explicit, accessible side identities across the board, book, and slip: Away blue, Home purple, Over green, and Under amber
 - Sequence-checked in-memory order books with stale-book detection
 - Live browser stream for books, health, fills, orders, positions, and reconciled settlement history
@@ -54,6 +56,8 @@ The production connection is deliberately **read-only**. The terminal includes t
 4. Start the executable and open `http://SERVER-IP:8080` through the office server's existing IP allowlist.
 
 The application reads environment variables from the server environment. It does not automatically read `.env`; use the server's normal service configuration or load the file before starting it.
+
+`PMBATTLE_MARKET_INTERVAL` controls full Kalshi catalog discovery and defaults to `5m`; live prices and account activity continue to use WebSockets.
 
 ### Build from source
 

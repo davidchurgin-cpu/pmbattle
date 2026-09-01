@@ -26,6 +26,7 @@ import (
 type Config struct {
 	ScheduleURL         string
 	ScheduleInterval    time.Duration
+	MarketInterval      time.Duration
 	ExchangeEnvironment string
 	Simulated           bool
 	DemoTrading         bool
@@ -34,6 +35,7 @@ type Config struct {
 type Service struct {
 	mu              sync.RWMutex
 	orderMu         sync.Mutex
+	catalogMu       sync.Mutex
 	cfg             Config
 	store           *storage.Store
 	schedule        schedule.Client
@@ -89,6 +91,9 @@ func (s *Service) Run(ctx context.Context) {
 	s.refreshSchedule(ctx)
 	go s.scheduleLoop(ctx)
 	go s.exchangeManager(ctx)
+	if !s.cfg.Simulated {
+		go s.marketCatalogLoop(ctx)
+	}
 	go s.bookManager(ctx)
 	<-ctx.Done()
 }
@@ -699,6 +704,23 @@ func (s *Service) scheduleLoop(ctx context.Context) {
 	}
 }
 
+func (s *Service) marketCatalogLoop(ctx context.Context) {
+	interval := s.cfg.MarketInterval
+	if interval <= 0 {
+		interval = 5 * time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.refreshExchangeMarkets(ctx, true)
+		}
+	}
+}
+
 func (s *Service) refreshSchedule(ctx context.Context) {
 	events, err := s.schedule.Fetch(ctx)
 	if err != nil {
@@ -788,39 +810,7 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 	if s.exchange == nil {
 		return
 	}
-	s.mu.RLock()
-	events := append([]domain.CanonicalEvent(nil), s.snapshot.Events...)
-	s.mu.RUnlock()
-	markets, err := s.exchange.ListMarkets(ctx, events)
-	if err != nil {
-		slog.Warn("market discovery failed", "error", err)
-		return
-	}
-	slog.Info("market discovery complete", "schedule_events", len(events), "exchange_markets", len(markets))
-	matched := mapping.Match(events, markets)
-	overrides, overrideErr := s.store.LoadMappingOverrides(ctx, s.exchange.Name())
-	if overrideErr != nil {
-		slog.Warn("load manual mapping overrides", "error", overrideErr)
-	} else {
-		applyMappingOverrides(matched, overrides)
-	}
-	reviews := buildMappingReviews(events, matched, s.exchange.Name())
-	if err := s.store.ReplaceMappingReviews(ctx, s.exchange.Name(), reviews); err != nil {
-		slog.Warn("persist mapping review queue", "error", err)
-	}
-	accepted := 0
-	for _, market := range matched {
-		_ = s.store.SaveMapping(ctx, market)
-		if market.MappingStatus == "accepted" {
-			accepted++
-		}
-	}
-	tickers := make([]string, 0)
-	if !s.cfg.Simulated {
-		tickers = s.attachMatched(matched)
-	}
-	s.setAvailableBooks(tickers)
-	slog.Info("market mapping complete", "accepted_markets", accepted, "available_books", len(tickers), "review_groups", len(reviews))
+	s.refreshExchangeMarkets(ctx, false)
 	s.reconcileAccount(ctx, false)
 	accountTicker := time.NewTicker(30 * time.Second)
 	defer accountTicker.Stop()
@@ -868,6 +858,50 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 		_ = subscription.Close()
 		s.reconcileAccount(ctx, true)
 		s.setExchangeHealth("reconnecting", 0)
+	}
+}
+
+func (s *Service) refreshExchangeMarkets(ctx context.Context, publish bool) {
+	if s.exchange == nil {
+		return
+	}
+	s.catalogMu.Lock()
+	defer s.catalogMu.Unlock()
+	s.mu.RLock()
+	events := append([]domain.CanonicalEvent(nil), s.snapshot.Events...)
+	s.mu.RUnlock()
+	markets, err := s.exchange.ListMarkets(ctx, events)
+	if err != nil {
+		slog.Warn("market discovery failed", "error", err)
+		return
+	}
+	slog.Info("market discovery complete", "schedule_events", len(events), "exchange_markets", len(markets))
+	matched := mapping.Match(events, markets)
+	overrides, overrideErr := s.store.LoadMappingOverrides(ctx, s.exchange.Name())
+	if overrideErr != nil {
+		slog.Warn("load manual mapping overrides", "error", overrideErr)
+	} else {
+		applyMappingOverrides(matched, overrides)
+	}
+	reviews := buildMappingReviews(events, matched, s.exchange.Name())
+	if err := s.store.ReplaceMappingReviews(ctx, s.exchange.Name(), reviews); err != nil {
+		slog.Warn("persist mapping review queue", "error", err)
+	}
+	accepted := 0
+	for _, market := range matched {
+		_ = s.store.SaveMapping(ctx, market)
+		if market.MappingStatus == "accepted" {
+			accepted++
+		}
+	}
+	tickers := make([]string, 0)
+	if !s.cfg.Simulated {
+		tickers = s.attachMatched(matched)
+	}
+	s.setAvailableBooks(tickers)
+	slog.Info("market mapping complete", "accepted_markets", accepted, "available_books", len(tickers), "review_groups", len(reviews))
+	if publish {
+		s.broadcast(domain.StreamEvent{Type: "schedule", Data: s.Snapshot().Events})
 	}
 }
 
@@ -1523,9 +1557,6 @@ func (s *Service) attachMatched(markets []domain.CanonicalMarket) []string {
 	selectedTickers := map[string]bool{}
 	for i := range s.snapshot.Events {
 		matches := byID[s.snapshot.Events[i].ID]
-		if len(matches) == 0 {
-			continue
-		}
 		event := &s.snapshot.Events[i]
 		views := make([]domain.MarketView, 0, 3)
 
@@ -1534,7 +1565,10 @@ func (s *Service) attachMatched(markets []domain.CanonicalMarket) []string {
 			if market.Type != domain.MarketMoneyline {
 				continue
 			}
-			participant := mapping.ParticipantIndex(*event, market.Outcome+" "+market.Subtitle)
+			participant := mapping.ParticipantIndex(*event, market.Outcome)
+			if participant < 0 {
+				participant = mapping.ParticipantIndex(*event, market.Subtitle)
+			}
 			quote := quoteForMarket(market, true)
 			if participant < 0 || quote == nil {
 				continue
@@ -1581,6 +1615,17 @@ func (s *Service) attachMatched(markets []domain.CanonicalMarket) []string {
 			views = append(views, domain.MarketView{Type: domain.MarketTotal, Line: primary.Line, Over: primary.Over, Under: primary.Under, Options: sortedOptions, Status: "open"})
 		}
 		event.Markets = views
+	}
+	// Keep the unfiltered schedule in sync too. Preferences are applied from
+	// allEvents, so a settings change must not erase already verified markets.
+	viewsByEvent := make(map[string][]domain.MarketView, len(s.snapshot.Events))
+	for _, event := range s.snapshot.Events {
+		viewsByEvent[event.ID] = event.Markets
+	}
+	for i := range s.allEvents {
+		if views, ok := viewsByEvent[s.allEvents[i].ID]; ok {
+			s.allEvents[i].Markets = views
+		}
 	}
 	tickers := make([]string, 0, len(selectedTickers))
 	for ticker := range selectedTickers {
@@ -1641,7 +1686,10 @@ func marketDistance(market domain.CanonicalMarket) int64 {
 }
 
 func spreadOption(event domain.CanonicalEvent, market domain.CanonicalMarket) *domain.MarketOption {
-	participant := mapping.ParticipantIndex(event, market.Outcome+" "+market.Subtitle)
+	participant := mapping.ParticipantIndex(event, market.Outcome)
+	if participant < 0 {
+		participant = mapping.ParticipantIndex(event, market.Subtitle)
+	}
 	yesQuote, noQuote := quoteForMarket(market, true), quoteForMarket(market, false)
 	if participant < 0 || yesQuote == nil || noQuote == nil {
 		return nil

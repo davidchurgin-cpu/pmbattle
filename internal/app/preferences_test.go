@@ -85,7 +85,7 @@ func TestAttachMatchedBuildsLiveSportsbookMarkets(t *testing.T) {
 		ID: "141", Participants: []domain.Participant{{Name: "Massachusetts"}, {Name: "Rutgers"}},
 	}}}}
 	markets := []domain.CanonicalMarket{
-		{EventID: "141", MappingStatus: "accepted", Exchange: "kalshi", ExchangeTicker: "MASS-ML", Type: domain.MarketMoneyline, Outcome: "UMass", YesBid: 200, YesAsk: 300, YesBidSize: 100 * domain.Dollar, YesAskSize: 100 * domain.Dollar},
+		{EventID: "141", MappingStatus: "accepted", Exchange: "kalshi", ExchangeTicker: "MASS-ML", Type: domain.MarketMoneyline, Outcome: "UMass", Subtitle: "UMass vs Rutgers college football game", YesBid: 200, YesAsk: 300, YesBidSize: 100 * domain.Dollar, YesAskSize: 100 * domain.Dollar},
 		{EventID: "141", MappingStatus: "accepted", Exchange: "kalshi", ExchangeTicker: "RUTG-ML", Type: domain.MarketMoneyline, Outcome: "Rutgers", YesBid: 9700, YesAsk: 9800, YesBidSize: 100 * domain.Dollar, YesAskSize: 100 * domain.Dollar},
 		{EventID: "141", MappingStatus: "accepted", Exchange: "kalshi", ExchangeTicker: "RUTG-SP", Type: domain.MarketSpread, Outcome: "Rutgers wins by over 24.5 points", Line: "24.5", YesBid: 4900, YesAsk: 5100, YesBidSize: 100 * domain.Dollar, YesAskSize: 100 * domain.Dollar},
 		{EventID: "141", MappingStatus: "accepted", Exchange: "kalshi", ExchangeTicker: "GAME-TOTAL", Type: domain.MarketTotal, Outcome: "Over 52.5 points", Line: "52.5", YesBid: 4800, YesAsk: 5200, YesBidSize: 100 * domain.Dollar, YesAskSize: 100 * domain.Dollar},
@@ -115,5 +115,20 @@ func TestSetEventsPreservesVerifiedLiveMarkets(t *testing.T) {
 	service.setEvents([]domain.CanonicalEvent{{ID: "141"}}, false)
 	if len(service.snapshot.Events[0].Markets) != 1 || service.snapshot.Events[0].Markets[0].Home.Ticker != "KXNCAAFGAME-LIVE" {
 		t.Fatalf("live market was not preserved: %+v", service.snapshot.Events[0].Markets)
+	}
+}
+
+func TestAttachMatchedPersistsMarketsAcrossPreferenceFiltering(t *testing.T) {
+	event := domain.CanonicalEvent{ID: "141", Sport: "football", Participants: []domain.Participant{{Name: "Massachusetts"}, {Name: "Rutgers"}}}
+	service := &Service{
+		allEvents: []domain.CanonicalEvent{event},
+		snapshot:  domain.Snapshot{Events: []domain.CanonicalEvent{event}},
+	}
+	service.attachMatched([]domain.CanonicalMarket{
+		{EventID: "141", MappingStatus: "accepted", Exchange: "kalshi", ExchangeTicker: "MASS-ML", Type: domain.MarketMoneyline, Outcome: "UMass", YesAsk: 300, YesAskSize: 100 * domain.Dollar},
+	})
+	service.snapshot.Events = filterEvents(service.allEvents, domain.Preferences{EnabledSports: []string{"football"}})
+	if len(service.snapshot.Events) != 1 || len(service.snapshot.Events[0].Markets) != 1 || service.snapshot.Events[0].Markets[0].Away == nil {
+		t.Fatalf("preference filtering erased attached markets: %+v", service.snapshot.Events)
 	}
 }

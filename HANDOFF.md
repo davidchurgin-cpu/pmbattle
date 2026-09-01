@@ -19,7 +19,7 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 no
 - `internal/server` exposes JSON and WebSocket endpoints, with mutation handlers delegated to the demo-only service guard, and serves the embedded app.
 - `web/src/App.svelte` contains the lightweight sportsbook board, instant search, filters, click-to-expand inline book ladder, and bottom activity tray.
 - `web/src/orderslip.css` isolates the small floating order-slip surface from the critical board styles.
-- `web/src/monitor.css` contains the fixed order monitor and transient fill-alert styling.
+- `web/src/monitor.css` contains order-action and transient fill-alert styling; the unified fixed activity dock lives in the main board stylesheet.
 - `web/src/sides.css` owns the shared Away/Home/Over/Under color system and labels.
 
 ## Browser API
@@ -56,7 +56,11 @@ The mutation routes are present for demo validation but are inert by default. St
 - Main spread and total lines are selected from the active strike closest to a 50% midpoint. Up to five nearby strikes are retained for the inline line selector.
 - Clicking a game expands its order book in place. The consolidated book stream contains the selected UI ticker plus the unique tickers required by active follow parents; changing or closing the dropdown never stops a working follow strategy. All unrelated books remain unloaded. The authenticated account stream remains independent and continuously connected.
 - The Yes and No tabs are real views of the same binary book: the No ladder is derived by complementing the synchronized Yes-price book. Clicking any bid or ask copies its exact side and price into the floating order slip. Submission stays disabled on the running production connection.
-- The dashboard monitor remains fixed while the user searches or changes markets. It shows normalized remaining quantities for working orders and the three latest fills. Each new WebSocket fill produces a 12-second visual alert and unread count; snapshot/replayed fill IDs are suppressed.
+- The bottom activity dock remains fixed while the user searches, scrolls, or changes markets. Its collapsed bar always shows positions, working orders, unread fills, history, and last-fill state; it expands upward into the existing detail tables. Each new WebSocket fill produces a 12-second visual alert and unread count; snapshot/replayed fill IDs are suppressed.
+- The board deliberately distinguishes `Not listed` (no safely matched Kalshi contract for that market type) from `Listed · no offer` (a mapped contract exists but has no usable ask). Neither state can open an order slip.
+- Market discovery reruns independently every `PMBATTLE_MARKET_INTERVAL` (five minutes by default), reapplies saved mapping decisions, replaces stale board views, and publishes the refreshed schedule. A mutex prevents overlapping reconnect and timer refreshes.
+- Attached live market views are copied into the unfiltered schedule before preference filtering. Saving sport or added-game preferences therefore cannot erase verified prices.
+- Participant resolution uses Kalshi's outcome label before its broader subtitle, preventing both team names in the contract question from making an otherwise exact matchup ambiguous. Current aliases include Louisiana-Monroe/UL Monroe, Mississippi St./Mississippi State, and Hawai'i/Hawaii.
 - Every quote carries its explicit Kalshi `yes`/`no` contract side. Selecting Away, Home, Over, or Under initializes the correct book side, while labels and four accessible colors remain consistent through the board, expanded book, and order slip.
 - REST and WebSocket orders are decoded from Kalshi's current `*_dollars` and `*_count_fp` fields into fixed-point internal values. This is required for reliable remaining-quantity and cash-risk monitoring.
 - Demo orders use Kalshi's current `/portfolio/events/orders` V2 shape. Buying NO is emitted as an ask at the complementary YES-book price. Counts and prices remain four-decimal fixed-point strings.
@@ -86,7 +90,8 @@ The mutation routes are present for demo validation but are inert by default. St
 
 ## Known limitations
 
-- Kalshi live order authentication and on-demand book streaming have been validated read-only against a production account. Validation mapped 2,240 contracts into 441 selectable game/strike books; a requested book moved from `202` to a synchronized live ladder, switching tickers opened only the replacement stream, and release returned `204`.
+- Kalshi live order authentication and on-demand book streaming have been validated read-only against a production account. The September 1, 2026 refresh mapped 2,244 of 4,760 discovered contracts into 514 selectable game/strike books; a requested Clemson order book synchronized with full depth and the production order button remained disabled.
+- The same live validation restored both moneyline sides for Clemson-LSU, Wisconsin-Notre Dame, UL Monroe-Mississippi State, UNLV-Hawaii, and UCLA-California. Of 86 enabled games, 63 currently have at least one mapped Kalshi moneyline; 23 have no mapped market. UCLA-California has no Kalshi spread or total event in the current catalog, so those cells correctly display `Not listed`.
 - Initial league-to-series routing covers the major US leagues plus selected top soccer leagues. Add aliases as new schedule leagues are enabled; unknown leagues intentionally load no Kalshi series.
 - The current general Kalshi fee rule is versioned in one module, but market-specific fee exceptions must be added before any production order preview.
 - Follow has automated coverage with a fake demo adapter and the current V2 amend contract, but it has not yet been manually exercised with separate Kalshi demo credentials. Production remains hard locked.
@@ -120,7 +125,7 @@ GitHub Actions runs these checks and publishes portable Windows/Linux binaries o
 
 ## Lightweight checkpoint
 
-- Browser production bundle: about 90.9 KB JavaScript and 24.9 KB CSS before gzip; there are no runtime browser dependencies beyond Svelte. Mapping reviews stay out of the startup snapshot and live stream and load only when requested in Settings.
+- Browser production bundle: about 88.5 KB JavaScript and 23.2 KB CSS before gzip; there are no runtime browser dependencies beyond Svelte. Mapping reviews stay out of the startup snapshot and live stream and load only when requested in Settings.
 - Production source maps are disabled and old side-panel CSS/dead book code were removed.
-- Runtime background work is bounded: one 30-second schedule ticker, one 30-second authenticated account-reconciliation ticker, one account stream, and one consolidated order-book stream containing only the selected UI book plus active follow books.
+- Runtime background work is bounded: one 30-second schedule ticker, one five-minute market-catalog ticker, one 30-second authenticated account-reconciliation ticker, one account stream, and one consolidated order-book stream containing only the selected UI book plus active follow books.
 - The stripped single Windows executable is about 12.0 MB, primarily because it embeds the pure-Go SQLite implementation and the complete browser app; deployment still requires only that one executable.

@@ -37,12 +37,11 @@
   let cancelGroupScope = 'all'
   let cancelingGroup = false
   let cancelGroupStatus = ''
-  let monitorOpen = false
   let unreadFills = 0
   let fillNotices: { key: string; fill: Fill }[] = []
   const seenFillIDs = new Set<string>()
   let book: OrderBook | null = null
-  let trayOpen = true
+  let trayOpen = false
   let trayTab: 'orders' | 'positions' | 'fills' | 'history' = 'fills'
   let historyMode: 'settlements' | 'audit' = 'settlements'
   let auditRecords: AuditRecord[] = []
@@ -112,9 +111,7 @@
     unreadFills += 1
     setTimeout(() => dismissNotice(key), 12000)
   }
-  function toggleMonitor() { monitorOpen = !monitorOpen; if (monitorOpen) unreadFills = 0 }
-  function showActivity(tab: 'orders' | 'fills') { trayTab = tab; trayOpen = true; unreadFills = 0 }
-  function viewFill(key: string) { dismissNotice(key); monitorOpen = true; unreadFills = 0 }
+  function viewFill(key: string) { dismissNotice(key); trayTab = 'fills'; trayOpen = true; slipOpen = false; unreadFills = 0 }
   async function showHistory(mode: 'settlements' | 'audit') {
     trayTab = 'history'; trayOpen = true; historyMode = mode
     if (mode === 'audit' && auditRecords.length === 0) await loadAudit(true)
@@ -210,6 +207,7 @@
     slipPolicy = intent === 'cross' ? 'limit' : 'post_only'
     slipCap = `${takerQuote(level).moneyline}`
     slipStatus = ''
+    trayOpen = false
     slipOpen = true
   }
   function setBookSide(side: 'yes' | 'no') { bookSide = side; slipOpen = false }
@@ -350,10 +348,10 @@
         <div class="game-wrap" class:expanded={expandedEventID === event.id}>
         <section class="game" class:selected={selectedEvent?.id === event.id} role="button" tabindex="0" on:click={() => toggleGame(event)} on:keydown={(key) => { if (key.key === 'Enter' || key.key === ' ') toggleGame(event) }}>
           <div class="rotations">{#each event.participants as participant}<b>{participant.rotation}</b>{/each}</div>
-          <div class="teams">{#each event.participants as participant}<div><strong>{participant.name}</strong><small>{participant.abbreviation}</small></div>{/each}</div>
-          <div class="market">{#if moneyline}{#each [moneyline.away, moneyline.home] as quote, index}<button class={index === 0 ? 'side-away' : 'side-home'} class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, moneyline)}><i class="side-tag">{index === 0 ? 'AWAY' : 'HOME'}</i><b>{ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
-          <div class="market">{#if spreadMarket}{#each [spreadMarket.away, spreadMarket.home] as quote, index}<button class={index === 0 ? 'side-away' : 'side-home'} class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, spreadMarket)}><i class="side-tag">{index === 0 ? 'AWAY' : 'HOME'}</i><b>{spread(spreadMarket.line, index === 0)} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
-          <div class="market">{#if total}{#each [total.over, total.under] as quote, index}<button class={index === 0 ? 'side-over' : 'side-under'} class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, total)}><i class="side-tag">{index === 0 ? 'OVER' : 'UNDER'}</i><b>{index === 0 ? 'O' : 'U'} {total.line} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Unavailable'}</small></button>{/each}{:else}<span>—</span><span>—</span>{/if}</div>
+          <div class="teams">{#each event.participants as participant}<div><strong>{participant.name}</strong></div>{/each}</div>
+          <div class="market">{#if moneyline}{#each [moneyline.away, moneyline.home] as quote, index}<button class={index === 0 ? 'side-away' : 'side-home'} class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, moneyline)}><i class="side-tag">{index === 0 ? 'AWAY' : 'HOME'}</i><b>{ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Listed · no offer'}</small></button>{/each}{:else}<span class="market-unlisted" title="Kalshi has not listed a matching moneyline market">Not listed</span>{/if}</div>
+          <div class="market">{#if spreadMarket}{#each [spreadMarket.away, spreadMarket.home] as quote, index}<button class={index === 0 ? 'side-away' : 'side-home'} class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, spreadMarket)}><i class="side-tag">{index === 0 ? 'AWAY' : 'HOME'}</i><b>{spread(spreadMarket.line, index === 0)} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Listed · no offer'}</small></button>{/each}{:else}<span class="market-unlisted" title="Kalshi has not listed a matching spread market">Not listed</span>{/if}</div>
+          <div class="market">{#if total}{#each [total.over, total.under] as quote, index}<button class={index === 0 ? 'side-over' : 'side-under'} class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, total)}><i class="side-tag">{index === 0 ? 'OVER' : 'UNDER'}</i><b>{index === 0 ? 'O' : 'U'} {total.line} · {ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Listed · no offer'}</small></button>{/each}{:else}<span class="market-unlisted" title="Kalshi has not listed a matching total market">Not listed</span>{/if}</div>
           <div class="start"><b>{day(event.startTime)}</b><span>{time(event.startTime)}</span><small>{expandedEventID === event.id ? 'Close ▲' : 'Book ▼'}</small></div>
         </section>
         {#if expandedEventID === event.id && selectedEvent?.id === event.id && selectedQuote && selectedMarket}
@@ -394,11 +392,12 @@
   </div>
 
   <section class="tray" class:open={trayOpen}>
-    <div class="tray-tabs">
+    <div class="tray-tabs" aria-label="Account activity">
       <button class:active={trayTab === 'positions'} on:click={() => { trayTab = 'positions'; trayOpen = true }}>Positions ({snapshot.positions.length})</button>
       <button class:active={trayTab === 'orders'} on:click={() => { trayTab = 'orders'; trayOpen = true }}>Orders ({snapshot.orders.length})</button>
-      <button class:active={trayTab === 'fills'} on:click={() => { trayTab = 'fills'; trayOpen = true }}>Live fills</button>
+      <button class:active={trayTab === 'fills'} on:click={() => { trayTab = 'fills'; trayOpen = true; unreadFills = 0 }}>Fills ({unreadFills ? `${unreadFills} new` : snapshot.fills.length})</button>
       <button class:active={trayTab === 'history'} on:click={() => showHistory('settlements')}>History ({snapshot.settlements.length})</button>
+      <span class="tray-status"><b>{workingOrders.length} working</b><small>{snapshot.fills[0] ? `Last fill ${time(snapshot.fills[0].createdAt)}` : 'Monitoring fills'}</small></span>
       <button class="tray-toggle" on:click={() => trayOpen = !trayOpen}>{trayOpen ? 'Collapse ↓' : 'Open ↑'}</button>
     </div>
     {#if trayOpen}<div class="tray-body">
@@ -474,26 +473,6 @@
       </section>
     </main>
   {/if}
-  <aside class="order-monitor" class:open={monitorOpen} aria-label="Order monitor">
-    <button class="monitor-toggle" on:click={toggleMonitor} aria-expanded={monitorOpen}>
-      <span class="monitor-live"><i></i>ORDERS</span>
-      <b>{workingOrders.length} working</b>
-      {#if unreadFills}<em>{unreadFills} new fill{unreadFills === 1 ? '' : 's'}</em>{:else}<small>{snapshot.fills[0] ? `Last fill ${time(snapshot.fills[0].createdAt)}` : 'Monitoring fills'}</small>{/if}
-      <span>{monitorOpen ? '▼' : '▲'}</span>
-    </button>
-    {#if monitorOpen}
-      <div class="monitor-body">
-        <header><b>Working orders</b><button on:click={() => showActivity('orders')}>Full orders</button></header>
-        {#each workingOrders.slice(0, 5) as order}
-          <div class="monitor-row"><span><b>{order.market || order.ticker}</b><small>{order.exchange} · {monitoredStatus(order)}</small></span><span><b>{qty(Math.max(0, order.quantity - order.filledQuantity))}</b><small>remaining</small></span><span class="monitor-actions">{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? '…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && parentForOrder(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? '…' : 'Cancel'}</button>{/if}</span></div>
-        {:else}<div class="monitor-empty">No working orders</div>{/each}
-        <header><b>Recent fills</b><button on:click={() => showActivity('fills')}>Full fills</button></header>
-        {#each snapshot.fills.slice(0, 3) as fill}
-          <div class="monitor-row fill"><span><b>{fillName(fill)}</b><small>{time(fill.createdAt)} · {fill.exchange}</small></span><span><b>{qty(fill.quantity)}</b><small>{ml(fill.allInMoneyline)}</small></span></div>
-        {:else}<div class="monitor-empty">No fills received</div>{/each}
-      </div>
-    {/if}
-  </aside>
   <section class="fill-notices" aria-live="assertive" aria-label="Fill notifications">
     {#each fillNotices as notice (notice.key)}
       <article class="fill-notice"><i></i><div><small>FILL RECEIVED</small><b>{fillName(notice.fill)}</b><span>{qty(notice.fill.quantity)} contracts · {ml(notice.fill.allInMoneyline)} all-in</span></div><button on:click={() => viewFill(notice.key)}>View</button><button class="notice-close" aria-label="Dismiss fill notification" on:click={() => dismissNotice(notice.key)}>×</button></article>

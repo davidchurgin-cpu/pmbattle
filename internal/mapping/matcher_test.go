@@ -61,3 +61,21 @@ func TestMatchRejectsAmbiguousDuplicateMatchups(t *testing.T) {
 		t.Fatalf("ambiguous matchup should require review: %+v", matched[0])
 	}
 }
+
+func TestMatchHandlesCommonScheduleAndKalshiTeamAliases(t *testing.T) {
+	tests := []struct {
+		away  string
+		home  string
+		title string
+	}{
+		{away: "UL Monroe", home: "Mississippi State", title: "Louisiana-Monroe vs Mississippi St."},
+		{away: "UNLV", home: "Hawaii", title: "UNLV vs Hawai'i"},
+	}
+	for _, tt := range tests {
+		events := []domain.CanonicalEvent{{ID: "game", Participants: []domain.Participant{{Name: tt.away}, {Name: tt.home}}}}
+		matched := Match(events, []domain.CanonicalMarket{{Title: tt.title}})
+		if matched[0].EventID != "game" || matched[0].MappingStatus != "accepted" {
+			t.Fatalf("%s did not match %s at %s: %+v", tt.title, tt.away, tt.home, matched[0])
+		}
+	}
+}
