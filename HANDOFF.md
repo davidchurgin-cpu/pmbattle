@@ -9,11 +9,11 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 no
 - `main.go` loads configuration, opens SQLite, starts the application service, embeds the frontend, and shuts down gracefully.
 - `internal/schedule` downloads and normalizes the sportsbook XML feed.
 - `internal/kalshi` implements environment selection, RSA-PSS authentication, market discovery, and separate account/order-book WebSocket subscriptions.
-- `internal/mapping` conservatively matches exchange markets to canonical schedule events.
+- `internal/mapping` conservatively matches exchange markets to canonical schedule events and supplies evidence-bounded candidates for manual review.
 - `internal/pricing` calculates current Kalshi maker/taker fees and fee-adjusted American moneylines using fixed-point money.
 - `internal/live` maintains sequence-checked in-memory order books.
 - `internal/orders` validates and sizes fee-inclusive parent orders, enforces the moneyline cap, links child orders, and owns demo iceberg, follow, and cancellation state.
-- `internal/storage` owns SQLite WAL tables for events, mappings, durable parent orders, settlements, settings, and audit history.
+- `internal/storage` owns SQLite WAL tables for events, automatic mappings, manual overrides, grouped review payloads, durable parent orders, settlements, settings, and audit history.
 - `internal/app` coordinates polling, mapping, reconciliation, streaming, and the browser snapshot.
 - `internal/server` exposes JSON and WebSocket endpoints, with mutation handlers delegated to the demo-only service guard, and serves the embedded app.
 - `web/src/App.svelte` contains the lightweight sportsbook board, instant search, filters, click-to-expand inline book ladder, and bottom activity tray.
@@ -29,6 +29,8 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 no
 - `DELETE /api/books/{ticker}` — release the UI book when the game dropdown closes; strategy-required books remain subscribed
 - `GET /api/settings` — available sports, event counts, and saved preferences
 - `GET /api/audit?limit=100&before={id}` — newest-first immutable audit records, loaded on demand and capped at 200 per page
+- `GET /api/mapping-reviews?limit=250` — grouped ambiguous-market reviews, loaded only from Settings and capped at 500
+- `POST /api/mapping-reviews/{id}` — accept one listed schedule candidate with `{eventId}` or persistently reject the group with `{reject:true}`; this changes local mapping state only
 - `PUT /api/settings` — save enabled sports and refresh the schedule and exchange subscriptions
 - `POST /api/parent-orders` — create a cash-risk-bounded basic, iceberg, or follow order; returns `403` unless explicitly enabled in Kalshi demo mode
 - `DELETE /api/parent-orders/{id}` — cancel every child of a demo parent order; also locked outside demo mode
@@ -48,6 +50,8 @@ The mutation routes are present for demo validation but are inert by default. St
 - Start with Kalshi demo. Confirm the health indicator and market mappings before considering production data.
 - The Kalshi adapter requests only enabled schedule leagues and main `GAME`, `SPREAD`, and `TOTAL` event series. Multileg and prop catalogs are outside the main board path.
 - The market matcher uses Kalshi's authoritative two-team event title plus occurrence time. Both participants must match; ambiguous duplicate matchups remain `review` and are hidden.
+- The manual review queue groups contracts sharing exchange, Kalshi event title, and occurrence time so a single decision covers related tickers. Candidates require positive two-team evidence and a start time within 36 hours. A decision can select only one of those server-issued candidates; contracts with no safe candidate stay hidden and do not flood the queue.
+- Accepted and rejected decisions are stored in a separate override table, survive catalog refreshes/restarts, are applied before tradable books are attached, and create an immutable `mapping_review_decided` audit record. Accepting or rejecting never calls an exchange mutation endpoint.
 - Main spread and total lines are selected from the active strike closest to a 50% midpoint. Up to five nearby strikes are retained for the inline line selector.
 - Clicking a game expands its order book in place. The consolidated book stream contains the selected UI ticker plus the unique tickers required by active follow parents; changing or closing the dropdown never stops a working follow strategy. All unrelated books remain unloaded. The authenticated account stream remains independent and continuously connected.
 - The Yes and No tabs are real views of the same binary book: the No ladder is derived by complementing the synchronized Yes-price book. Clicking any bid or ask copies its exact side and price into the floating order slip. Submission stays disabled on the running production connection.
@@ -90,6 +94,7 @@ The mutation routes are present for demo validation but are inert by default. St
 - Open-position and settlement restart reconciliation has recorded multi-page fixture coverage and was smoke-tested read-only against production on August 31, 2026: 7 open positions, 5 resting orders, and 50 recent settlements rendered successfully. The displayed $62,989.94 cash at risk exactly matched position exposure plus resting-order risk; trading remained disabled.
 - The shared-bankroll/safety release was smoke-tested read-only against production on August 31, 2026: account state `READY`, 441 mapped markets, $213,074.64 available/new-order capacity, and $62,989.94 cash at risk rendered in Settings. The server and UI both reported `Production order entry is hard-locked`; no mutation endpoint was invoked.
 - On-demand System audit was smoke-tested read-only on August 31, 2026: the bounded API returned newest-first cursor metadata, the browser loaded 15 existing records only after the subview was opened, and Details rendered the exact stored fixed-point fill payload. Production remained hard-locked and no mutation endpoint was invoked.
+- Manual mapping review was smoke-tested read-only on August 31, 2026: 4,723 Kalshi contracts produced 2,240 confidently accepted mappings and zero current evidence-backed ambiguous groups. The on-demand API returned an empty list, Settings rendered the searchable `0 groups` empty state without browser errors, and the safety badge remained `READ-ONLY`. No accept/reject or exchange mutation endpoint was invoked.
 - Production mutation is intentionally impossible and must remain so unless a separate review is completed and the user explicitly authorizes real-money trading.
 - The schedule feed is HTTP. Deploy through the office server and monitor its freshness; do not infer a game state when the feed is unavailable.
 
@@ -111,7 +116,7 @@ GitHub Actions runs these checks and publishes portable Windows/Linux binaries o
 
 ## Lightweight checkpoint
 
-- Browser production bundle: about 85.5 KB JavaScript and 23.2 KB CSS before gzip; there are no runtime browser dependencies beyond Svelte.
+- Browser production bundle: about 90.9 KB JavaScript and 24.9 KB CSS before gzip; there are no runtime browser dependencies beyond Svelte. Mapping reviews stay out of the startup snapshot and live stream and load only when requested in Settings.
 - Production source maps are disabled and old side-panel CSS/dead book code were removed.
 - Runtime background work is bounded: one 30-second schedule ticker, one 30-second authenticated account-reconciliation ticker, one account stream, and one consolidated order-book stream containing only the selected UI book plus active follow books.
 - The stripped single Windows executable is about 12.0 MB, primarily because it embeds the pure-Go SQLite implementation and the complete browser app; deployment still requires only that one executable.

@@ -9,6 +9,7 @@ The production connection is deliberately **read-only**. The terminal includes t
 - Schedule ingestion from `rawschedule_v2_expanded.xml` every 30 seconds
 - Normalized sports, leagues, games, rotation numbers, teams, start times, and scores
 - Conservative Kalshi market matching with uncertain matches hidden from the board
+- On-demand Settings review for ambiguous mappings, grouped by related Kalshi contracts; approvals are limited to evidence-backed schedule candidates and rejections persist across refreshes
 - Fixed-point money and fee calculations; no floating point is used for order cost or fees
 - Fee-adjusted American moneylines as the primary displayed price
 - Moneyline, spread, and total columns in the simulated sportsbook board
@@ -35,7 +36,7 @@ The production connection is deliberately **read-only**. The terminal includes t
 - Explicit, accessible side identities across the board, book, and slip: Away blue, Home purple, Over green, and Under amber
 - Sequence-checked in-memory order books with stale-book detection
 - Live browser stream for books, health, fills, orders, positions, and reconciled settlement history
-- SQLite WAL persistence for schedules, mappings, settings, settlements, parent orders, and audit records
+- SQLite WAL persistence for schedules, automatic mappings, manual mapping overrides, review queues, settings, settlements, parent orders, and audit records
 - On-demand System audit history for order requests, acknowledgements, rejections, fills, risk reconciliation, follow decisions, resumes, and cancellations; cursor paging keeps it out of the live snapshot
 - Standard light and dark themes
 - Persisted Settings tab for enabling only the sports you want to load and subscribe to
@@ -108,6 +109,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 ## Safety model
 
 - Uncertain market mappings are not displayed as tradable markets.
+- Manual mapping decisions change only PMBattle's local mapping state. They cannot place an order; a candidate must contain both matching teams within 36 hours of the Kalshi occurrence time, and contracts without a safe candidate remain hidden outside the review queue.
 - WebSocket sequence gaps are validated at Kalshi's subscription level; a gap reconnects the feed and marks cached books stale until fresh snapshots arrive.
 - Account activity stays connected independently from the on-demand order book, so orders and fills remain live while no game is expanded.
 - Historical fills load quietly at startup; only new authenticated fill events create alerts, preventing notification spam after reconnects.
