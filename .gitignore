@@ -8,4 +8,4 @@ dist/
 !web/dist/**
 .cache/
 *.exe
-
+pmbattle.*.log
