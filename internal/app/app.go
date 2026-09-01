@@ -64,6 +64,15 @@ func (s *Service) Run(ctx context.Context) {
 	if value, ok, err := s.store.GetSetting(ctx, "preferences"); err == nil && ok {
 		_ = json.Unmarshal([]byte(value), &s.preferences)
 	}
+	if parents, err := s.store.LoadParentOrders(ctx); err != nil {
+		slog.Error("load parent orders", "error", err)
+	} else {
+		s.orderEngine.Restore(parents)
+		s.mu.Lock()
+		s.snapshot.ParentOrders = parents
+		s.recalculateParentRiskLocked()
+		s.mu.Unlock()
+	}
 	if cached, err := s.store.LoadEvents(ctx); err == nil && len(cached) > 0 {
 		s.setEvents(cached, false)
 	}
@@ -173,6 +182,9 @@ func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrder
 	s.upsertOrderLocked(child)
 	s.recalculateParentRiskLocked()
 	s.mu.Unlock()
+	if err := s.store.SaveParentOrder(ctx, parent); err != nil {
+		slog.Error("persist acknowledged parent order", "parent_id", parent.ID, "error", err)
+	}
 	_ = s.store.Audit(ctx, "parent_order_acknowledged", map[string]any{"parent": parent, "child": child})
 	s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
 	s.broadcast(domain.StreamEvent{Type: "order", Data: child})
@@ -206,6 +218,9 @@ func (s *Service) CancelParentOrder(ctx context.Context, id string) (domain.Pare
 	}
 	s.recalculateParentRiskLocked()
 	s.mu.Unlock()
+	if err := s.store.SaveParentOrder(ctx, parent); err != nil {
+		slog.Error("persist canceled parent order", "parent_id", parent.ID, "error", err)
+	}
 	_ = s.store.Audit(ctx, "parent_order_canceled", parent)
 	s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
 	for _, child := range updatedChildren {
@@ -255,9 +270,20 @@ func (s *Service) upsertOrderLocked(order domain.Order) {
 	s.snapshot.Orders = append([]domain.Order{order}, s.snapshot.Orders...)
 }
 
+func (s *Service) upsertParentLocked(parent domain.ParentOrder) {
+	for i := range s.snapshot.ParentOrders {
+		if s.snapshot.ParentOrders[i].ID == parent.ID {
+			s.snapshot.ParentOrders[i] = parent
+			return
+		}
+	}
+	s.snapshot.ParentOrders = append([]domain.ParentOrder{parent}, s.snapshot.ParentOrders...)
+}
+
 func (s *Service) recalculateParentRiskLocked() {
 	s.snapshot.AtRisk = 0
 	for _, parent := range s.snapshot.ParentOrders {
+		s.snapshot.AtRisk += parent.FilledRisk
 		if parent.Status != "canceled" && parent.Status != "filled" && parent.Status != "rejected" {
 			s.snapshot.AtRisk += parent.ReservedRisk
 		}
@@ -457,14 +483,7 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 	}
 	s.setAvailableBooks(tickers)
 	slog.Info("market mapping complete", "accepted_markets", accepted, "available_books", len(tickers))
-	orders, positions, fills, err := s.exchange.Snapshot(ctx)
-	if err == nil {
-		s.mu.Lock()
-		s.snapshot.Orders = orders
-		s.snapshot.Positions = positions
-		s.snapshot.Fills = fills
-		s.mu.Unlock()
-	}
+	s.reconcileAccount(ctx, false)
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -505,7 +524,84 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 			}
 		}
 		_ = subscription.Close()
+		s.reconcileAccount(ctx, true)
 		s.setExchangeHealth("reconnecting", 0)
+	}
+}
+
+func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
+	if balance, balanceErr := s.exchange.Balance(ctx); balanceErr != nil {
+		slog.Warn("balance reconciliation failed", "error", balanceErr)
+	} else {
+		s.mu.Lock()
+		s.snapshot.Bankroll = balance
+		s.mu.Unlock()
+	}
+	orders, positions, fills, err := s.exchange.Snapshot(ctx)
+	if err != nil {
+		slog.Warn("account reconciliation failed", "error", err)
+	} else {
+		reconciledParents := make([]domain.ParentOrder, 0)
+		for _, order := range orders {
+			if parent, ok := s.orderEngine.ApplyOrder(order); ok {
+				reconciledParents = append(reconciledParents, parent)
+			}
+		}
+		s.mu.Lock()
+		s.snapshot.Orders = orders
+		s.snapshot.Positions = positions
+		for _, parent := range reconciledParents {
+			s.upsertParentLocked(parent)
+		}
+		s.recalculateParentRiskLocked()
+		s.mu.Unlock()
+		for _, parent := range reconciledParents {
+			if err := s.store.SaveParentOrder(ctx, parent); err != nil {
+				slog.Error("persist reconciled parent order", "parent_id", parent.ID, "error", err)
+			}
+			if publish {
+				s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
+			}
+		}
+		if publish {
+			for _, order := range orders {
+				s.broadcast(domain.StreamEvent{Type: "order", Data: order})
+			}
+			for _, position := range positions {
+				s.broadcast(domain.StreamEvent{Type: "position", Data: position})
+			}
+		}
+		for _, fill := range fills {
+			s.applyFill(fill, publish)
+		}
+	}
+	s.reconcileParentFills(ctx, publish)
+	snapshot := s.Snapshot()
+	s.broadcast(domain.StreamEvent{Type: "account_snapshot", Data: domain.AccountSnapshot{ParentOrders: snapshot.ParentOrders, Orders: snapshot.Orders, Positions: snapshot.Positions, Fills: snapshot.Fills, Bankroll: snapshot.Bankroll, AtRisk: snapshot.AtRisk}})
+}
+
+func (s *Service) reconcileParentFills(ctx context.Context, publish bool) {
+	parents := s.orderEngine.List()
+	childIDs := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, parent := range parents {
+		for _, childID := range parent.ChildOrderIDs {
+			if childID != "" && !seen[childID] {
+				seen[childID] = true
+				childIDs = append(childIDs, childID)
+			}
+		}
+	}
+	if len(childIDs) == 0 {
+		return
+	}
+	fills, err := s.exchange.Fills(ctx, childIDs)
+	if err != nil {
+		slog.Warn("parent fill reconciliation failed", "orders", len(childIDs), "error", err)
+		return
+	}
+	for _, fill := range fills {
+		s.applyFill(fill, publish)
 	}
 }
 
@@ -668,30 +764,24 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 		}
 	case "fill":
 		if fill, ok := event.Data.(domain.Fill); ok {
-			s.mu.Lock()
-			s.snapshot.Fills = append([]domain.Fill{fill}, s.snapshot.Fills...)
-			if len(s.snapshot.Fills) > 250 {
-				s.snapshot.Fills = s.snapshot.Fills[:250]
-			}
-			s.mu.Unlock()
-			_ = s.store.Audit(context.Background(), "fill", fill)
-			s.broadcast(event)
+			s.applyFill(fill, true)
 		}
 	case "order":
 		if order, ok := event.Data.(domain.Order); ok {
+			parent, parentMatched := s.orderEngine.ApplyOrder(order)
 			s.mu.Lock()
-			replaced := false
-			for i := range s.snapshot.Orders {
-				if s.snapshot.Orders[i].ID == order.ID {
-					s.snapshot.Orders[i] = order
-					replaced = true
-					break
-				}
-			}
-			if !replaced {
-				s.snapshot.Orders = append([]domain.Order{order}, s.snapshot.Orders...)
+			s.upsertOrderLocked(order)
+			if parentMatched {
+				s.upsertParentLocked(parent)
+				s.recalculateParentRiskLocked()
 			}
 			s.mu.Unlock()
+			if parentMatched {
+				if err := s.store.SaveParentOrder(context.Background(), parent); err != nil {
+					slog.Error("persist order-reconciled parent order", "parent_id", parent.ID, "order_id", order.ID, "error", err)
+				}
+				s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
+			}
 			s.broadcast(event)
 		}
 	case "position":
@@ -714,6 +804,55 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 	default:
 		s.broadcast(event)
 	}
+}
+
+func (s *Service) applyFill(fill domain.Fill, publish bool) bool {
+	s.mu.RLock()
+	duplicate := false
+	for _, existing := range s.snapshot.Fills {
+		if fill.ID != "" && existing.ID == fill.ID {
+			duplicate = true
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if duplicate {
+		return false
+	}
+	parent, reconciled := s.orderEngine.ApplyFill(fill)
+	if !reconciled {
+		parent, _ = s.orderEngine.ParentForChild(fill.OrderID)
+	}
+	if parent.ID != "" {
+		fill.EventID = parent.EventID
+		fill.Rotation = parent.Rotation
+		fill.Team = parent.Outcome
+		fill.Market = parent.Market
+	}
+	if reconciled {
+		s.mu.Lock()
+		s.upsertParentLocked(parent)
+		s.recalculateParentRiskLocked()
+		s.mu.Unlock()
+		if err := s.store.SaveParentOrder(context.Background(), parent); err != nil {
+			slog.Error("persist fill-reconciled parent order", "parent_id", parent.ID, "fill_id", fill.ID, "error", err)
+		}
+		_ = s.store.Audit(context.Background(), "parent_order_fill_reconciled", map[string]any{"parent": parent, "fill": fill})
+		if publish {
+			s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
+		}
+	}
+	s.mu.Lock()
+	s.snapshot.Fills = append([]domain.Fill{fill}, s.snapshot.Fills...)
+	if len(s.snapshot.Fills) > 250 {
+		s.snapshot.Fills = s.snapshot.Fills[:250]
+	}
+	s.mu.Unlock()
+	_ = s.store.Audit(context.Background(), "fill", fill)
+	if publish {
+		s.broadcast(domain.StreamEvent{Type: "fill", Data: fill})
+	}
+	return true
 }
 
 func (s *Service) attachMatched(markets []domain.CanonicalMarket) []string {

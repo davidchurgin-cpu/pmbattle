@@ -243,6 +243,63 @@ func (c *Client) Snapshot(ctx context.Context) ([]domain.Order, []domain.Positio
 	return orders, nil, nil, nil
 }
 
+func (c *Client) Balance(ctx context.Context) (domain.Money, error) {
+	if c.key == nil || c.cfg.KeyID == "" {
+		return 0, nil
+	}
+	var payload struct {
+		Balance int64 `json:"balance"`
+	}
+	if err := c.getJSON(ctx, "/portfolio/balance", &payload); err != nil {
+		return 0, err
+	}
+	return domain.Money(payload.Balance * 100), nil
+}
+
+func (c *Client) Fills(ctx context.Context, orderIDs []string) ([]domain.Fill, error) {
+	if c.key == nil || c.cfg.KeyID == "" || len(orderIDs) == 0 {
+		return []domain.Fill{}, nil
+	}
+	result := make([]domain.Fill, 0)
+	seen := make(map[string]bool)
+	for _, orderID := range orderIDs {
+		if strings.TrimSpace(orderID) == "" {
+			continue
+		}
+		cursor := ""
+		for page := 0; page < 100; page++ {
+			path := "/portfolio/fills?limit=1000&order_id=" + url.QueryEscape(orderID)
+			if cursor != "" {
+				path += "&cursor=" + url.QueryEscape(cursor)
+			}
+			var payload struct {
+				Fills  []rawFill `json:"fills"`
+				Cursor string    `json:"cursor"`
+			}
+			if err := c.getJSON(ctx, path, &payload); err != nil {
+				return nil, err
+			}
+			for _, raw := range payload.Fills {
+				fill := normalizeFill(raw)
+				key := fill.ID
+				if key == "" {
+					key = fill.OrderID + "|" + fill.CreatedAt.Format(time.RFC3339Nano) + "|" + fixed.Format(fill.Quantity)
+				}
+				if !seen[key] {
+					seen[key] = true
+					result = append(result, fill)
+				}
+			}
+			if payload.Cursor == "" {
+				break
+			}
+			cursor = payload.Cursor
+		}
+	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].CreatedAt.Before(result[j].CreatedAt) })
+	return result, nil
+}
+
 func (c *Client) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequest) (domain.Order, error) {
 	if !strings.EqualFold(c.cfg.Environment, "demo") {
 		return domain.Order{}, errors.New("kalshi order mutation is locked outside the demo environment")
@@ -320,6 +377,65 @@ type rawOrder struct {
 	Initial   string    `json:"initial_count_fp"`
 	Created   time.Time `json:"created_time"`
 	CreatedMS int64     `json:"created_ts_ms"`
+}
+
+type rawFill struct {
+	FillID        string    `json:"fill_id"`
+	TradeID       string    `json:"trade_id"`
+	OrderID       string    `json:"order_id"`
+	Ticker        string    `json:"ticker"`
+	MarketTicker  string    `json:"market_ticker"`
+	Side          string    `json:"side"`
+	OutcomeSide   string    `json:"outcome_side"`
+	PurchasedSide string    `json:"purchased_side"`
+	Action        string    `json:"action"`
+	YesPrice      string    `json:"yes_price_dollars"`
+	NoPrice       string    `json:"no_price_dollars"`
+	Count         string    `json:"count_fp"`
+	FeeCost       string    `json:"fee_cost"`
+	IsTaker       bool      `json:"is_taker"`
+	Created       time.Time `json:"created_time"`
+	TimestampMS   int64     `json:"ts_ms"`
+}
+
+func normalizeFill(raw rawFill) domain.Fill {
+	id := raw.FillID
+	if id == "" {
+		id = raw.TradeID
+	}
+	ticker := raw.MarketTicker
+	if ticker == "" {
+		ticker = raw.Ticker
+	}
+	side := raw.OutcomeSide
+	if side == "" {
+		side = raw.PurchasedSide
+	}
+	if side == "" {
+		side = raw.Side
+	}
+	priceText := raw.YesPrice
+	if side == "no" && raw.NoPrice != "" {
+		priceText = raw.NoPrice
+	}
+	price, _ := fixed.Parse(priceText)
+	if side == "no" && raw.NoPrice == "" {
+		price = domain.Dollar - price
+	}
+	quantity, _ := fixed.Parse(raw.Count)
+	fee, _ := fixed.Parse(raw.FeeCost)
+	if raw.FeeCost == "" {
+		fee = pricing.KalshiFee(price, quantity, !raw.IsTaker)
+	}
+	quote, _ := pricing.QuoteWithFee(price, quantity, fee)
+	created := raw.Created
+	if created.IsZero() && raw.TimestampMS > 0 {
+		created = time.UnixMilli(raw.TimestampMS).UTC()
+	}
+	if created.IsZero() {
+		created = time.Now().UTC()
+	}
+	return domain.Fill{ID: id, OrderID: raw.OrderID, Exchange: "Kalshi", Ticker: ticker, Market: ticker, Side: side, Quantity: quantity, RawPrice: price, AllInMoneyline: quote.AllInMoneyline, Fee: fee, CashRisk: quote.AllInCost, CreatedAt: created}
 }
 
 func normalizeOrder(raw rawOrder) domain.Order {
@@ -479,40 +595,11 @@ func translate(message wsMessage) (domain.StreamEvent, bool, error) {
 		}
 		return domain.StreamEvent{Type: "orderbook_delta", Data: domain.OrderBookDelta{Ticker: raw.Ticker, Sequence: message.Seq, Side: raw.Side, Price: price, Delta: delta}}, true, nil
 	case "fill":
-		var raw struct {
-			TradeID       string `json:"trade_id"`
-			OrderID       string `json:"order_id"`
-			Ticker        string `json:"market_ticker"`
-			IsTaker       bool   `json:"is_taker"`
-			Side          string `json:"side"`
-			PurchasedSide string `json:"purchased_side"`
-			Action        string `json:"action"`
-			Price         string `json:"yes_price_dollars"`
-			Count         string `json:"count_fp"`
-			TimestampMS   int64  `json:"ts_ms"`
-		}
+		var raw rawFill
 		if err := json.Unmarshal(message.Msg, &raw); err != nil {
 			return domain.StreamEvent{}, false, err
 		}
-		price, err := fixed.Parse(raw.Price)
-		if err != nil {
-			return domain.StreamEvent{}, false, err
-		}
-		quantity, err := fixed.Parse(raw.Count)
-		if err != nil {
-			return domain.StreamEvent{}, false, err
-		}
-		if raw.Side == "no" || raw.PurchasedSide == "no" {
-			price = domain.Dollar - price
-		}
-		fee := pricing.KalshiFee(price, quantity, !raw.IsTaker)
-		quote, _ := pricing.Quote(price, quantity, !raw.IsTaker)
-		created := time.UnixMilli(raw.TimestampMS).UTC()
-		if raw.TimestampMS == 0 {
-			created = time.Now().UTC()
-		}
-		fill := domain.Fill{ID: raw.TradeID, Exchange: "Kalshi", Ticker: raw.Ticker, Market: raw.Ticker, Side: raw.Side, Quantity: quantity, RawPrice: price, AllInMoneyline: quote.AllInMoneyline, Fee: fee, CashRisk: quote.AllInCost, CreatedAt: created}
-		return domain.StreamEvent{Type: "fill", Data: fill}, true, nil
+		return domain.StreamEvent{Type: "fill", Data: normalizeFill(raw)}, true, nil
 	case "user_order":
 		var raw rawOrder
 		if err := json.Unmarshal(message.Msg, &raw); err != nil {

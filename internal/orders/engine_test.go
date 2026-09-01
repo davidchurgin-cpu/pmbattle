@@ -80,3 +80,51 @@ func TestQuantitySizingAtLowPriceDoesNotOverflow(t *testing.T) {
 		t.Fatalf("quantity=%d quote=%+v", quantity, quote)
 	}
 }
+
+func TestFillReducesParentRiskOnceBeforePublication(t *testing.T) {
+	engine := New(true, &fakeExecutor{})
+	parent, child, err := engine.Create(context.Background(), validRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fillQuote, err := pricing.Quote(parent.LimitPrice, 10*domain.Dollar, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fill := domain.Fill{ID: "fill-1", OrderID: child.ID, Quantity: 10 * domain.Dollar, CashRisk: fillQuote.AllInCost}
+	updated, ok := engine.ApplyFill(fill)
+	if !ok {
+		t.Fatal("fill did not match parent")
+	}
+	if updated.Status != "partially_filled" || updated.FilledQuantity != fill.Quantity || updated.FilledRisk != fill.CashRisk || updated.RemainingRisk != parent.CashRiskTarget-fill.CashRisk || updated.ReservedRisk != parent.ReservedRisk-fill.CashRisk {
+		t.Fatalf("unexpected reconciled parent %+v", updated)
+	}
+	duplicate, ok := engine.ApplyFill(fill)
+	if ok || duplicate.ID != "" {
+		t.Fatalf("duplicate fill was applied: %+v ok=%v", duplicate, ok)
+	}
+}
+
+func TestRestoredParentReconcilesChildCancellation(t *testing.T) {
+	parent := domain.ParentOrder{ID: "parent-1", Ticker: "TEST", Status: "resting", CashRiskTarget: 100 * domain.Dollar, RemainingRisk: 100 * domain.Dollar, ReservedRisk: 90 * domain.Dollar, LimitPrice: 5000, Quantity: 190 * domain.Dollar, ChildOrderIDs: []string{"child-1"}}
+	engine := New(true, &fakeExecutor{})
+	engine.Restore([]domain.ParentOrder{parent})
+	updated, ok := engine.ApplyOrder(domain.Order{ID: "child-1", Status: "canceled", Quantity: parent.Quantity, FilledQuantity: 10 * domain.Dollar})
+	if !ok || updated.Status != "canceled" || updated.ReservedRisk != 0 || updated.FilledQuantity != 0 {
+		t.Fatalf("unexpected restored parent %+v ok=%v", updated, ok)
+	}
+}
+
+func TestOrderSnapshotDoesNotDoubleCountReplayedFills(t *testing.T) {
+	parent := domain.ParentOrder{ID: "parent-1", Status: "resting", CashRiskTarget: 100 * domain.Dollar, RemainingRisk: 100 * domain.Dollar, ReservedRisk: 90 * domain.Dollar, LimitPrice: 5000, Quantity: 190 * domain.Dollar, ChildOrderIDs: []string{"child-1"}}
+	engine := New(true, &fakeExecutor{})
+	engine.Restore([]domain.ParentOrder{parent})
+	if _, ok := engine.ApplyOrder(domain.Order{ID: "child-1", Status: "resting", Quantity: parent.Quantity, FilledQuantity: 10 * domain.Dollar}); !ok {
+		t.Fatal("order snapshot did not match parent")
+	}
+	fillQuote, _ := pricing.Quote(parent.LimitPrice, 10*domain.Dollar, false)
+	updated, ok := engine.ApplyFill(domain.Fill{ID: "fill-1", OrderID: "child-1", Quantity: 10 * domain.Dollar, CashRisk: fillQuote.AllInCost})
+	if !ok || updated.FilledQuantity != 10*domain.Dollar {
+		t.Fatalf("filled quantity was double-counted: %+v", updated)
+	}
+}

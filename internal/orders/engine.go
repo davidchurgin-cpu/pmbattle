@@ -56,6 +56,47 @@ func New(enabled bool, executor Executor) *Engine {
 	return &Engine{enabled: enabled, exec: executor, parents: make(map[string]domain.ParentOrder)}
 }
 
+func (e *Engine) Restore(parents []domain.ParentOrder) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, parent := range parents {
+		if parent.ID == "" {
+			continue
+		}
+		if parent.RemainingRisk == 0 && parent.FilledRisk < parent.CashRiskTarget && !terminal(parent.Status) {
+			parent.RemainingRisk = parent.CashRiskTarget - parent.FilledRisk
+		}
+		parent.ChildOrderIDs = append([]string(nil), parent.ChildOrderIDs...)
+		parent.ProcessedFillIDs = append([]string(nil), parent.ProcessedFillIDs...)
+		e.parents[parent.ID] = parent
+	}
+}
+
+func (e *Engine) List() []domain.ParentOrder {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	parents := make([]domain.ParentOrder, 0, len(e.parents))
+	for _, parent := range e.parents {
+		parent.ChildOrderIDs = append([]string(nil), parent.ChildOrderIDs...)
+		parent.ProcessedFillIDs = append([]string(nil), parent.ProcessedFillIDs...)
+		parents = append(parents, parent)
+	}
+	return parents
+}
+
+func (e *Engine) ParentForChild(childOrderID string) (domain.ParentOrder, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, parent := range e.parents {
+		if contains(parent.ChildOrderIDs, childOrderID) {
+			parent.ChildOrderIDs = append([]string(nil), parent.ChildOrderIDs...)
+			parent.ProcessedFillIDs = append([]string(nil), parent.ProcessedFillIDs...)
+			return parent, true
+		}
+	}
+	return domain.ParentOrder{}, false
+}
+
 func (e *Engine) Create(ctx context.Context, request CreateRequest) (domain.ParentOrder, domain.Order, error) {
 	if !e.enabled || e.exec == nil {
 		return domain.ParentOrder{}, domain.Order{}, ErrDisabled
@@ -132,6 +173,90 @@ func (e *Engine) Cancel(ctx context.Context, parentID string) (domain.ParentOrde
 	return parent, nil
 }
 
+func (e *Engine) ApplyFill(fill domain.Fill) (domain.ParentOrder, bool) {
+	if fill.OrderID == "" || fill.Quantity <= 0 {
+		return domain.ParentOrder{}, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, parent := range e.parents {
+		if !contains(parent.ChildOrderIDs, fill.OrderID) || fill.ID != "" && contains(parent.ProcessedFillIDs, fill.ID) {
+			continue
+		}
+		parent.FilledQuantity += fill.Quantity
+		parent.FilledRisk += fill.CashRisk
+		if parent.FilledRisk >= parent.CashRiskTarget {
+			parent.RemainingRisk = 0
+		} else {
+			parent.RemainingRisk = parent.CashRiskTarget - parent.FilledRisk
+		}
+		if fill.CashRisk >= parent.ReservedRisk {
+			parent.ReservedRisk = 0
+		} else {
+			parent.ReservedRisk -= fill.CashRisk
+		}
+		if fill.ID != "" {
+			parent.ProcessedFillIDs = append(parent.ProcessedFillIDs, fill.ID)
+		}
+		if parent.FilledQuantity >= parent.Quantity {
+			parent.Status = "filled"
+			parent.ReservedRisk = 0
+		} else {
+			parent.Status = "partially_filled"
+		}
+		parent.UpdatedAt = time.Now().UTC()
+		e.parents[id] = parent
+		return parent, true
+	}
+	return domain.ParentOrder{}, false
+}
+
+func (e *Engine) ApplyOrder(order domain.Order) (domain.ParentOrder, bool) {
+	if order.ID == "" {
+		return domain.ParentOrder{}, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, parent := range e.parents {
+		if !contains(parent.ChildOrderIDs, order.ID) {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(order.Status))
+		switch status {
+		case "filled", "executed", "closed":
+			parent.Status = "filled"
+			parent.ReservedRisk = 0
+		case "canceled", "cancelled", "rejected":
+			parent.Status = status
+			parent.ReservedRisk = 0
+		default:
+			parent.Status = status
+			if parent.Status == "" {
+				parent.Status = "submitted"
+			}
+			if parent.FilledQuantity > 0 || order.FilledQuantity > 0 {
+				parent.Status = "partially_filled"
+			}
+			remainingQuantity := order.Quantity - order.FilledQuantity
+			if remainingQuantity < 0 {
+				remainingQuantity = 0
+			}
+			if quote, err := pricing.Quote(parent.LimitPrice, remainingQuantity, false); err == nil {
+				parent.ReservedRisk = quote.AllInCost
+				if parent.ReservedRisk > parent.RemainingRisk {
+					parent.ReservedRisk = parent.RemainingRisk
+				}
+			} else if remainingQuantity == 0 {
+				parent.ReservedRisk = 0
+			}
+		}
+		parent.UpdatedAt = time.Now().UTC()
+		e.parents[id] = parent
+		return parent, true
+	}
+	return domain.ParentOrder{}, false
+}
+
 func QuantityForCashRisk(price, cashRisk domain.Money) (domain.Money, domain.PriceQuote, error) {
 	if price <= 0 || price >= domain.Dollar || cashRisk <= 0 {
 		return 0, domain.PriceQuote{}, ErrInvalidOrder
@@ -171,6 +296,24 @@ func withinCap(actual, cap int64) bool {
 	actualProbability, actualErr := pricing.ProbabilityFromMoneyline(actual)
 	capProbability, capErr := pricing.ProbabilityFromMoneyline(cap)
 	return actualErr == nil && capErr == nil && actualProbability <= capProbability
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func terminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "filled", "executed", "closed", "canceled", "cancelled", "rejected":
+		return true
+	default:
+		return false
+	}
 }
 
 func newID() (string, error) {

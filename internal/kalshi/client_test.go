@@ -24,7 +24,7 @@ func TestTranslateFill(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected fill type %T", event.Data)
 	}
-	if fill.ID != "trade-1" || fill.Quantity != 100*domain.Dollar || fill.RawPrice != 5000 || fill.Fee != 17500 {
+	if fill.ID != "trade-1" || fill.OrderID != "order-1" || fill.Quantity != 100*domain.Dollar || fill.RawPrice != 5000 || fill.Fee != 17500 {
 		t.Fatalf("unexpected fill %+v", fill)
 	}
 }
@@ -89,5 +89,49 @@ func TestProductionClientRefusesOrderMutation(t *testing.T) {
 	}
 	if err := client.CancelOrder(context.Background(), "order-1"); err == nil {
 		t.Fatal("production cancellation was not locked")
+	}
+}
+
+func TestFillsUsesOrderScopedCurrentFixedPointFields(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/portfolio/fills" || r.URL.Query().Get("order_id") != "child-1" || r.URL.Query().Get("limit") != "1000" {
+			t.Fatalf("unexpected request %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte(`{"fills":[{"fill_id":"fill-1","order_id":"child-1","market_ticker":"TEST","outcome_side":"no","no_price_dollars":"0.4000","count_fp":"2.0000","fee_cost":"0.1000","created_time":"2026-08-31T20:00:00Z"}],"cursor":""}`))
+	}))
+	defer server.Close()
+	client := &Client{cfg: Config{Environment: "production", KeyID: "key-id"}, baseURL: server.URL, key: key, http: server.Client()}
+	fills, err := client.Fills(context.Background(), []string{"child-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fills) != 1 || fills[0].ID != "fill-1" || fills[0].OrderID != "child-1" || fills[0].Side != "no" || fills[0].RawPrice != 4000 || fills[0].Fee != 1000 || fills[0].CashRisk != 9000 {
+		t.Fatalf("unexpected fills %+v", fills)
+	}
+}
+
+func TestBalanceConvertsCentsToInternalMoney(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/portfolio/balance" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"balance":123456,"portfolio_value":130000}`))
+	}))
+	defer server.Close()
+	client := &Client{cfg: Config{Environment: "production", KeyID: "key-id"}, baseURL: server.URL, key: key, http: server.Client()}
+	balance, err := client.Balance(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if balance != 12_345_600 {
+		t.Fatalf("balance got %d want 12345600", balance)
 	}
 }

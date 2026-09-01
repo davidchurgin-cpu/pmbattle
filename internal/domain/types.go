@@ -107,6 +107,7 @@ type OrderBook struct {
 
 type Fill struct {
 	ID             string    `json:"id"`
+	OrderID        string    `json:"orderId,omitempty"`
 	Exchange       string    `json:"exchange"`
 	Ticker         string    `json:"ticker"`
 	EventID        string    `json:"eventId,omitempty"`
@@ -156,7 +157,9 @@ type ParentOrder struct {
 	PriceCapMoneyline int64     `json:"priceCapMoneyline"`
 	LimitPrice        Money     `json:"limitPrice"`
 	Quantity          Money     `json:"quantity"`
+	FilledQuantity    Money     `json:"filledQuantity"`
 	ChildOrderIDs     []string  `json:"childOrderIds"`
+	ProcessedFillIDs  []string  `json:"processedFillIds,omitempty"`
 	CreatedAt         time.Time `json:"createdAt"`
 	UpdatedAt         time.Time `json:"updatedAt"`
 }
@@ -211,6 +214,15 @@ type Snapshot struct {
 	Bankroll     Money            `json:"bankroll"`
 	AtRisk       Money            `json:"atRisk"`
 	Settings     Settings         `json:"settings"`
+}
+
+type AccountSnapshot struct {
+	ParentOrders []ParentOrder `json:"parentOrders"`
+	Orders       []Order       `json:"orders"`
+	Positions    []Position    `json:"positions"`
+	Fills        []Fill        `json:"fills"`
+	Bankroll     Money         `json:"bankroll"`
+	AtRisk       Money         `json:"atRisk"`
 }
 
 type StreamEvent struct {

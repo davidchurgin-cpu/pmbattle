@@ -60,15 +60,28 @@ func KalshiFee(price, quantity domain.Money, maker bool) domain.Money {
 }
 
 func Quote(price, quantity domain.Money, maker bool) (domain.PriceQuote, error) {
-	rawML, err := MoneylineFromProbability(price)
-	if err != nil {
-		return domain.PriceQuote{}, err
-	}
 	makerFee := KalshiFee(price, quantity, true)
 	takerFee := KalshiFee(price, quantity, false)
 	fee := takerFee
 	if maker {
 		fee = makerFee
+	}
+	quote, err := QuoteWithFee(price, quantity, fee)
+	if err != nil {
+		return domain.PriceQuote{}, err
+	}
+	quote.MakerFee = makerFee
+	quote.TakerFee = takerFee
+	return quote, nil
+}
+
+func QuoteWithFee(price, quantity, fee domain.Money) (domain.PriceQuote, error) {
+	rawML, err := MoneylineFromProbability(price)
+	if err != nil {
+		return domain.PriceQuote{}, err
+	}
+	if fee < 0 {
+		return domain.PriceQuote{}, errors.New("fee cannot be negative")
 	}
 	cost := domain.Money((int64(price)*int64(quantity) + int64(domain.Dollar) - 1) / int64(domain.Dollar))
 	allIn := cost + fee
@@ -81,5 +94,5 @@ func Quote(price, quantity domain.Money, maker bool) (domain.PriceQuote, error) 
 	if err != nil {
 		return domain.PriceQuote{}, err
 	}
-	return domain.PriceQuote{RawPrice: price, MakerFee: makerFee, TakerFee: takerFee, AllInCost: allIn, RawMoneyline: rawML, AllInMoneyline: allInML, AvailableQuantity: quantity}, nil
+	return domain.PriceQuote{RawPrice: price, AllInCost: allIn, RawMoneyline: rawML, AllInMoneyline: allInML, AvailableQuantity: quantity}, nil
 }

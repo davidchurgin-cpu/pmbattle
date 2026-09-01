@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
+  import type { AccountSnapshot, BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
 
   let snapshot: Snapshot = { events: [], parentOrders: [], orders: [], positions: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', latencyMs: 0, tradingEnabled: false }, bankroll: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
   let view: 'schedule' | 'settings' = 'schedule'
@@ -81,7 +81,7 @@
   $: workingOrders = snapshot.orders.filter(order => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((order.status || '').toLowerCase()))
 
   function normalizeSnapshot(value: Snapshot): Snapshot {
-    return { ...value, events: value.events || [], orders: value.orders || [], positions: value.positions || [], fills: value.fills || [], settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
+    return { ...value, events: value.events || [], parentOrders: value.parentOrders || [], orders: value.orders || [], positions: value.positions || [], fills: value.fills || [], settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
   }
   function normalizeBook(value: OrderBook): OrderBook { return { ...value, yes: value.yes || [], no: value.no || [] } }
   function fillName(fill: Fill) { return fill.team || fill.market || fill.ticker }
@@ -169,6 +169,11 @@
     }
   }
   function applyStream(message: { type: string; data: unknown }) {
+    if (message.type === 'account_snapshot') {
+      const account = message.data as AccountSnapshot
+      ;(account.fills || []).forEach(fill => seenFillIDs.add(fill.id))
+      snapshot = { ...snapshot, parentOrders: account.parentOrders || [], orders: account.orders || [], positions: account.positions || [], fills: account.fills || [], bankroll: account.bankroll || 0, atRisk: account.atRisk || 0 }
+    }
     if (message.type === 'schedule') snapshot = { ...snapshot, events: (message.data as Event[]) || [] }
     if (message.type === 'health') snapshot = { ...snapshot, health: message.data as Health }
     if (message.type === 'settings') { snapshot = { ...snapshot, settings: message.data as Settings }; draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames }

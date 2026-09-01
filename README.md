@@ -18,6 +18,8 @@ The production connection is deliberately **read-only**. The terminal includes t
 - Clickable Yes/No bid and ask levels that populate a floating bottom order slip with the exact price, cash-at-risk field, fee-adjusted cap, and basic/iceberg/follow controls
 - Demo-only basic limit, post-only, IOC, and cancel commands sized from a parent cash-risk target with a hard fee-adjusted moneyline cap
 - Current Kalshi V2 fixed-point order requests, including correct NO-to-YES-book conversion and idempotent client order IDs
+- Durable parent orders that survive restart, deduplicate fills, and reduce remaining risk before fill notifications reach the browser
+- Order-scoped REST fill recovery after startup and account-stream reconnects, plus the authenticated read-only available bankroll
 - Always-visible dashboard order monitor with working quantities and recent fills, plus immediate visual alerts for every newly streamed full or partial fill
 - Explicit, accessible side identities across the board, book, and slip: Away blue, Home purple, Over green, and Under amber
 - Sequence-checked in-memory order books with stale-book detection
@@ -97,6 +99,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - WebSocket sequence gaps are validated at Kalshi's subscription level; a gap reconnects the feed and marks cached books stale until fresh snapshots arrive.
 - Account activity stays connected independently from the on-demand order book, so orders and fills remain live while no game is expanded.
 - Historical fills load quietly at startup; only new authenticated fill events create alerts, preventing notification spam after reconnects.
+- A partial fill remains counted as cash at risk while its open-order reservation is reduced; canceling the remainder does not erase the risk already held in the resulting position.
 - The UI clearly identifies simulated/live mode and stale data.
 - Credentials never pass through the browser.
 - The server enforces same-origin browser WebSockets and basic security headers.

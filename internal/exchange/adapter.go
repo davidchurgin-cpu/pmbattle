@@ -28,6 +28,8 @@ type Adapter interface {
 	SubscribeAccount(context.Context) (*Subscription, error)
 	SubscribeBooks(context.Context, []string) (*Subscription, error)
 	Snapshot(context.Context) ([]domain.Order, []domain.Position, []domain.Fill, error)
+	Balance(context.Context) (domain.Money, error)
+	Fills(context.Context, []string) ([]domain.Fill, error)
 	PlaceOrder(context.Context, PlaceOrderRequest) (domain.Order, error)
 	CancelOrder(context.Context, string) error
 }

@@ -34,6 +34,7 @@ func (s *Store) init(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS market_mappings (exchange TEXT NOT NULL, ticker TEXT NOT NULL, event_id TEXT NOT NULL, confidence INTEGER NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(exchange,ticker))`,
 		`CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, kind TEXT NOT NULL, payload BLOB NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS parent_orders (id TEXT PRIMARY KEY, status TEXT NOT NULL, payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -97,6 +98,36 @@ func (s *Store) Audit(ctx context.Context, kind string, value any) error {
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO audit_log(occurred_at,kind,payload) VALUES(?,?,?)`, time.Now().UTC().Format(time.RFC3339Nano), kind, payload)
 	return err
+}
+
+func (s *Store) SaveParentOrder(ctx context.Context, parent domain.ParentOrder) error {
+	payload, err := json.Marshal(parent)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO parent_orders(id,status,payload,updated_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,payload=excluded.payload,updated_at=excluded.updated_at`, parent.ID, parent.Status, payload, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) LoadParentOrders(ctx context.Context) ([]domain.ParentOrder, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM parent_orders ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	parents := make([]domain.ParentOrder, 0)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var parent domain.ParentOrder
+		if err := json.Unmarshal(payload, &parent); err != nil {
+			return nil, err
+		}
+		parents = append(parents, parent)
+	}
+	return parents, rows.Err()
 }
 
 func (s *Store) SaveMapping(ctx context.Context, market domain.CanonicalMarket) error {

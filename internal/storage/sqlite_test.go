@@ -43,3 +43,22 @@ func TestSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected setting value=%q ok=%v err=%v", value, ok, err)
 	}
 }
+
+func TestParentOrdersRoundTrip(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "parents.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	want := domain.ParentOrder{ID: "parent-1", Ticker: "TEST", Side: "yes", Status: "partially_filled", CashRiskTarget: 5_000 * domain.Dollar, FilledRisk: 500 * domain.Dollar, RemainingRisk: 4_500 * domain.Dollar, ChildOrderIDs: []string{"child-1"}, ProcessedFillIDs: []string{"fill-1"}, UpdatedAt: time.Now().UTC()}
+	if err := store.SaveParentOrder(context.Background(), want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LoadParentOrders(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != want.ID || got[0].RemainingRisk != want.RemainingRisk || len(got[0].ProcessedFillIDs) != 1 {
+		t.Fatalf("unexpected parents %+v", got)
+	}
+}
