@@ -78,15 +78,15 @@ The mutation routes are present for demo validation but are inert by default. St
 - The current general Kalshi fee rule is versioned in one module, but market-specific fee exceptions must be added before any production order preview.
 - Follow has automated coverage with a fake demo adapter and the current V2 amend contract, but it has not yet been manually exercised with separate Kalshi demo credentials. Production remains hard locked.
 - Completed parents are retained in SQLite without pruning yet. A retention policy will be needed as history grows.
-- Open-position and settlement restart reconciliation has recorded multi-page fixture coverage, but the new History display still needs a read-only smoke test against the production account after deployment.
+- Open-position and settlement restart reconciliation has recorded multi-page fixture coverage and was smoke-tested read-only against production on August 31, 2026: 7 open positions, 5 resting orders, and 50 recent settlements rendered successfully. The displayed $62,989.94 cash at risk exactly matched position exposure plus resting-order risk; trading remained disabled.
 - Production mutation is intentionally impossible and must remain so unless a separate review is completed and the user explicitly authorizes real-money trading.
 - The schedule feed is HTTP. Deploy through the office server and monitor its freshness; do not infer a game state when the feed is unavailable.
 
 ## Next milestone: Kalshi demo trading
 
-1. Read-only smoke test the open-position and settlement History views against production data without sending any mutation.
-2. Validate basic, iceberg, follow, resume, and scoped-cancel flows manually with separate Kalshi demo credentials, without sending any production mutation.
-3. Keep production blocked until demo fees, partial fills, reconnect recovery, and risk totals match Kalshi reports and the user explicitly authorizes a later real-money milestone.
+1. Validate basic, iceberg, follow, resume, and scoped-cancel flows manually with separate Kalshi demo credentials, without sending any production mutation.
+2. Compare demo fees, partial fills, reconnect recovery, and risk totals against Kalshi's own account display.
+3. Keep production blocked until those checks pass and the user explicitly authorizes a later real-money milestone.
 
 ## Validation commands
 
