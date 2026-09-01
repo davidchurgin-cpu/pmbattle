@@ -4,7 +4,7 @@
 
 Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 has basic, iceberg, and controlled follow orders. Limit, post-only, IOC basic orders, limit/post-only icebergs, and post-only follow parents flow through one durable cash-at-risk model into Kalshi's V2 order API. Parent state survives restart and reconciles order-scoped fills, paginated open positions, and settled-market history before the browser receives account activity. Order entry is disabled by default but can now be enabled for demo or production.
 
-September 1, 2026 hardening (branch `claude/code-review-assessment-t8xog4`): a `CLAUDE.md` brief for AI sessions, corrected live/demo safety labels, a `PMBATTLE_MAX_CASH_RISK` per-order cap, a request-header check against cross-site request forgery (a password sign-in was also built, then removed at the owner's request), amend responses that may carry a replacement order ID, and `FIRST-LIVE-ORDER.md`, the owner's step-by-step script for the first real order. The owner is not a programmer and places every order personally in the browser; no AI session may place, amend, cancel, or resume orders.
+September 1, 2026 hardening (merged to `main` the same day): a `CLAUDE.md` brief for AI sessions, corrected live/demo safety labels, a `PMBATTLE_MAX_CASH_RISK` per-order cap, a request-header check against cross-site request forgery (a password sign-in was also built, then removed at the owner's request), amend responses that may carry a replacement order ID, and `FIRST-LIVE-ORDER.md`, the owner's step-by-step script for the first real order. The owner is not a programmer and places every order personally in the browser; no AI session may place, amend, cancel, or resume orders.
 
 ## Architecture
 
@@ -157,7 +157,7 @@ The owner runs `FIRST-LIVE-ORDER.md` in the browser against production with `PMB
 5. Only after two clean basic orders: design a live test for iceberg (one slice, tiny size), then for follow. Follow needs proof that a post-only order that would cross is rejected, and that the amend response's order ID behavior matches the replacement-ID handling. Both are described in the verification section.
 6. Keep `PMBATTLE_TRADING_ENABLED=false` in every start script that is not actively being used for a test.
 
-Housekeeping still open: retention for completed parents and audit rows; branch merge of `claude/code-review-assessment-t8xog4` into `main` once the owner is happy with it.
+Housekeeping still open: retention for completed parents and audit rows.
 
 After a second exchange is selected, connect its normalized adapter to `internal/routing`, then add the fill-driven coordinator that reduces parent remaining risk before resizing or canceling competing venue children. Until then, the planner remains a tested, non-mutating foundation rather than an order path.
 
