@@ -89,12 +89,12 @@ func TestMappingReviewEndpointsValidateCandidateAndPersistGroup(t *testing.T) {
 		t.Fatalf("unexpected review list: status=%d reviews=%+v err=%v", response.Code, reviews, err)
 	}
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/mapping-reviews/group-1", bytes.NewBufferString(`{"eventId":"unrelated"}`)))
+	handler.ServeHTTP(response, mutatingRequest(http.MethodPost, "/api/mapping-reviews/group-1", `{"eventId":"unrelated"}`))
 	if response.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("invalid candidate status=%d body=%s", response.Code, response.Body.String())
 	}
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/mapping-reviews/group-1", bytes.NewBufferString(`{"eventId":"141"}`)))
+	handler.ServeHTTP(response, mutatingRequest(http.MethodPost, "/api/mapping-reviews/group-1", `{"eventId":"141"}`))
 	if response.Code != http.StatusOK {
 		t.Fatalf("valid candidate status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -107,6 +107,7 @@ func TestMappingReviewEndpointsValidateCandidateAndPersistGroup(t *testing.T) {
 func TestParentOrderEndpointIsLockedByDefault(t *testing.T) {
 	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/api/parent-orders", bytes.NewBufferString(`{"eventId":"1","ticker":"TEST","outcome":"Yes","market":"moneyline","side":"yes","strategy":"basic","policy":"limit","cashRisk":10000,"priceCapMoneyline":-107,"limitPrice":5000}`))
+	request.Header.Set("X-Requested-With", "PMBattle")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	New(service, nil).Handler().ServeHTTP(response, request)
@@ -118,6 +119,7 @@ func TestParentOrderEndpointIsLockedByDefault(t *testing.T) {
 func TestBulkCancelEndpointIsLockedInProduction(t *testing.T) {
 	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/api/parent-orders/cancel", bytes.NewBufferString(`{"scope":"all"}`))
+	request.Header.Set("X-Requested-With", "PMBattle")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	New(service, nil).Handler().ServeHTTP(response, request)
@@ -129,6 +131,7 @@ func TestBulkCancelEndpointIsLockedInProduction(t *testing.T) {
 func TestBulkCancelEndpointRejectsUnknownScope(t *testing.T) {
 	service := app.New(app.Config{ExchangeEnvironment: "demo", TradingEnabled: true}, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/api/parent-orders/cancel", bytes.NewBufferString(`{"scope":"everything"}`))
+	request.Header.Set("X-Requested-With", "PMBattle")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	New(service, nil).Handler().ServeHTTP(response, request)
@@ -140,6 +143,7 @@ func TestBulkCancelEndpointRejectsUnknownScope(t *testing.T) {
 func TestResumeEndpointIsLockedInProduction(t *testing.T) {
 	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/api/parent-orders/parent-1/resume", nil)
+	request.Header.Set("X-Requested-With", "PMBattle")
 	response := httptest.NewRecorder()
 	New(service, nil).Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
@@ -150,6 +154,7 @@ func TestResumeEndpointIsLockedInProduction(t *testing.T) {
 func TestIndividualCancelEndpointIsLockedInProduction(t *testing.T) {
 	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
 	request := httptest.NewRequest(http.MethodDelete, "/api/parent-orders/parent-1", nil)
+	request.Header.Set("X-Requested-With", "PMBattle")
 	response := httptest.NewRecorder()
 	New(service, nil).Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusForbidden {
@@ -183,5 +188,98 @@ func TestHealthReportsLoweredPerOrderCap(t *testing.T) {
 	}
 	if health.MaxCashRisk != 25*domain.Dollar {
 		t.Fatalf("health cap %d, want %d", health.MaxCashRisk, 25*domain.Dollar)
+	}
+}
+
+func mutatingRequest(method, path, body string) *http.Request {
+	request := httptest.NewRequest(method, path, bytes.NewBufferString(body))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-Requested-With", "PMBattle")
+	return request
+}
+
+func TestMutationsRequireRequestHeaderEvenWithoutPassword(t *testing.T) {
+	service := app.New(app.Config{ExchangeEnvironment: "demo", TradingEnabled: true}, nil, nil)
+	handler := New(service, nil).Handler()
+	request := httptest.NewRequest(http.MethodPost, "/api/parent-orders/cancel", bytes.NewBufferString(`{"scope":"all"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || !bytes.Contains(response.Body.Bytes(), []byte("request header")) {
+		t.Fatalf("cross-site style post was not rejected: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/snapshot", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("open server without a password should still serve reads: %d", response.Code)
+	}
+}
+
+func TestPasswordProtectsApiAndLoginIssuesSession(t *testing.T) {
+	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
+	handler := New(service, nil).RequirePassword("correct horse battery").Handler()
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/snapshot", nil))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("snapshot without session: status=%d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/session", nil))
+	var probe map[string]bool
+	if err := json.NewDecoder(response.Body).Decode(&probe); err != nil || !probe["loginRequired"] || probe["authenticated"] {
+		t.Fatalf("session probe wrong: status=%d probe=%+v err=%v", response.Code, probe, err)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, mutatingRequest(http.MethodPost, "/api/login", `{"password":"nope"}`))
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password accepted: status=%d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, mutatingRequest(http.MethodPost, "/api/login", `{"password":"correct horse battery"}`))
+	if response.Code != http.StatusOK {
+		t.Fatalf("login failed: status=%d body=%s", response.Code, response.Body.String())
+	}
+	cookies := response.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "pmbattle_session" || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("session cookie missing or weak: %+v", cookies)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/api/snapshot", nil)
+	request.AddCookie(cookies[0])
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("snapshot with session: status=%d", response.Code)
+	}
+	request = mutatingRequest(http.MethodPost, "/api/logout", "")
+	request.AddCookie(cookies[0])
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("logout: status=%d", response.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/snapshot", nil)
+	request.AddCookie(cookies[0])
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("session survived logout: status=%d", response.Code)
+	}
+}
+
+func TestLoginIsThrottledAfterRepeatedFailures(t *testing.T) {
+	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
+	handler := New(service, nil).RequirePassword("correct horse battery").Handler()
+	for i := 0; i < 5; i++ {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, mutatingRequest(http.MethodPost, "/api/login", `{"password":"guess"}`))
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: status=%d", i, response.Code)
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, mutatingRequest(http.MethodPost, "/api/login", `{"password":"correct horse battery"}`))
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("sixth attempt was not throttled: status=%d", response.Code)
 	}
 }

@@ -21,14 +21,28 @@ type Server struct {
 	service  *app.Service
 	static   fs.FS
 	upgrader websocket.Upgrader
+	auth     *auth
 }
 
 func New(service *app.Service, static fs.FS) *Server {
-	return &Server{service: service, static: static, upgrader: websocket.Upgrader{ReadBufferSize: 1024, WriteBufferSize: 4096, CheckOrigin: func(r *http.Request) bool { return sameOrigin(r) }}}
+	return &Server{service: service, static: static, auth: newAuth(""), upgrader: websocket.Upgrader{ReadBufferSize: 1024, WriteBufferSize: 4096, CheckOrigin: func(r *http.Request) bool { return sameOrigin(r) }}}
 }
+
+// RequirePassword makes every API route, including the live stream, demand a
+// signed-in browser session. An empty password leaves the server open, which
+// is only acceptable for read-only use on a trusted network.
+func (s *Server) RequirePassword(password string) *Server {
+	s.auth = newAuth(password)
+	return s
+}
+
+func (s *Server) LoginRequired() bool { return s.auth.required() }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/session", s.session)
+	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/snapshot", s.snapshot)
 	mux.HandleFunc("GET /api/settings", s.settings)
@@ -46,7 +60,7 @@ func (s *Server) Handler() http.Handler {
 	if s.static != nil {
 		mux.Handle("/", spaHandler(s.static))
 	}
-	return securityHeaders(mux)
+	return securityHeaders(s.guard(mux))
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

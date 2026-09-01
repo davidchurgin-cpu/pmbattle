@@ -51,6 +51,40 @@
   let auditError = ''
   let theme: 'light' | 'dark' = (localStorage.getItem('pmbattle-theme') as 'light' | 'dark') || 'dark'
   let error = ''
+  let authRequired = false
+  let authenticated = true
+  let loginPassword = ''
+  let loginStatus = ''
+  let loginBusy = false
+  let socket: WebSocket | null = null
+
+  const rawFetch = globalThis.fetch.bind(globalThis)
+  // Every API call carries a custom header so a cross-site page cannot forge
+  // requests, and a 401 anywhere sends the user back to the sign-in screen.
+  async function api(input: string, init: RequestInit = {}) {
+    const headers = new Headers(init.headers || {})
+    headers.set('X-Requested-With', 'PMBattle')
+    const response = await rawFetch(input, { ...init, headers })
+    if (response.status === 401) { authRequired = true; authenticated = false; socket?.close() }
+    return response
+  }
+  async function login() {
+    if (loginBusy) return
+    loginBusy = true; loginStatus = 'Signing in…'
+    try {
+      const response = await api('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: loginPassword }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || 'Unable to sign in')
+      loginPassword = ''; loginStatus = ''; authenticated = true
+      await bootstrap()
+    } catch (cause) { loginStatus = cause instanceof Error ? cause.message : 'Unable to sign in' }
+    finally { loginBusy = false }
+  }
+  async function logout() {
+    await api('/api/logout', { method: 'POST' }).catch(() => {})
+    socket?.close(); socket = null
+    authenticated = false; slipOpen = false; trayOpen = false
+  }
 
   const money = (value: number) => `$${(value / 10000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   const qty = (value: number) => (value / 10000).toLocaleString(undefined, { maximumFractionDigits: 2 })
@@ -123,7 +157,7 @@
     auditLoading = true; auditError = ''
     try {
       const before = reset ? 0 : auditNextBefore
-      const response = await fetch(`/api/audit?limit=100${before ? `&before=${before}` : ''}`)
+      const response = await api(`/api/audit?limit=100${before ? `&before=${before}` : ''}`)
       if (!response.ok) throw new Error('Unable to load audit history')
       const page = await response.json() as AuditPage
       auditRecords = reset ? (page.records || []) : [...auditRecords, ...(page.records || [])]
@@ -151,7 +185,7 @@
   async function savePreferences() {
     settingsStatus = 'Saving…'
     try {
-      const response = await fetch('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabledSports: draftSports, excludeAddedGames: draftExcludeAddedGames }) })
+      const response = await api('/api/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabledSports: draftSports, excludeAddedGames: draftExcludeAddedGames }) })
       if (!response.ok) throw new Error('Unable to save sports preferences')
       snapshot = normalizeSnapshot(await response.json()); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); selectedSport = 'ALL'; selectedLeague = 'ALL'; selectedDate = 'ALL'; settingsStatus = 'Saved'
     } catch (cause) { settingsStatus = cause instanceof Error ? cause.message : 'Unable to save settings' }
@@ -160,7 +194,7 @@
     if (mappingLoading) return
     mappingLoading = true; mappingError = ''
     try {
-      const response = await fetch('/api/mapping-reviews?limit=250')
+      const response = await api('/api/mapping-reviews?limit=250')
       if (!response.ok) throw new Error('Unable to load mapping reviews')
       mappingReviews = await response.json() as MappingReview[]
       mappingSelections = Object.fromEntries(mappingReviews.filter(review => review.candidates[0]).map(review => [review.id, review.candidates[0].eventId]))
@@ -178,7 +212,7 @@
     if (!confirm(`Confirm: ${action}? This changes only PMBattle's local mapping and never places an order.`)) return
     mappingDeciding = review.id; mappingError = ''
     try {
-      const response = await fetch(`/api/mapping-reviews/${encodeURIComponent(review.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reject ? { reject: true } : { eventId }) })
+      const response = await api(`/api/mapping-reviews/${encodeURIComponent(review.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reject ? { reject: true } : { eventId }) })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Unable to save mapping decision')
       mappingReviews = mappingReviews.filter(value => value.id !== review.id)
@@ -188,10 +222,10 @@
   async function select(event: Event, quote?: PriceQuote, market?: MarketView) {
     if (!quote) return
     selectedEvent = event; selectedQuote = quote; selectedMarket = market || event.markets?.find(value => [value.away, value.home, value.over, value.under].some(valueQuote => valueQuote?.ticker === quote.ticker)) || null; bookSide = quote.side || 'yes'; expandedEventID = event.id; slipOpen = false; book = null
-    try { const response = await fetch(`/api/books/${encodeURIComponent(quote.ticker)}`); if (response.ok) book = normalizeBook(await response.json()) } catch { /* the live snapshot will arrive over the browser stream */ }
+    try { const response = await api(`/api/books/${encodeURIComponent(quote.ticker)}`); if (response.ok) book = normalizeBook(await response.json()) } catch { /* the live snapshot will arrive over the browser stream */ }
   }
   function toggleGame(event: Event) {
-    if (expandedEventID === event.id) { if (selectedQuote) fetch(`/api/books/${encodeURIComponent(selectedQuote.ticker)}`, { method: 'DELETE' }).catch(() => {}); expandedEventID = ''; selectedEvent = null; selectedQuote = null; selectedMarket = null; book = null; return }
+    if (expandedEventID === event.id) { if (selectedQuote) api(`/api/books/${encodeURIComponent(selectedQuote.ticker)}`, { method: 'DELETE' }).catch(() => {}); expandedEventID = ''; selectedEvent = null; selectedQuote = null; selectedMarket = null; book = null; return }
     const market = event.markets?.find(value => value.home || value.away || value.over || value.under)
     select(event, market?.home || market?.away || market?.over || market?.under, market)
   }
@@ -218,7 +252,7 @@
 	if (snapshot.health.mode === 'live' && !confirm(`Place a REAL Kalshi order for ${activeOutcome} with ${money(Math.round((Number(slipRisk) || 0) * 10000))} cash at risk?`)) return
     slipStatus = 'Submitting…'
     try {
-      const response = await fetch('/api/parent-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId: selectedEvent?.id, rotation: selectedEvent?.participants.find(participant => participant.name === selectedQuote?.outcome)?.rotation || '', ticker: selectedQuote?.ticker, outcome: activeOutcome, market: marketLabel(selectedMarket), side: bookSide, strategy: slipStrategy, policy: slipPolicy, cashRisk: Math.round((Number(slipRisk) || 0) * 10000), priceCapMoneyline: Number(slipCap), limitPrice: slipPrice, sliceQuantity: Math.round((Number(slipSlice) || 0) * 10000) }) })
+      const response = await api('/api/parent-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId: selectedEvent?.id, rotation: selectedEvent?.participants.find(participant => participant.name === selectedQuote?.outcome)?.rotation || '', ticker: selectedQuote?.ticker, outcome: activeOutcome, market: marketLabel(selectedMarket), side: bookSide, strategy: slipStrategy, policy: slipPolicy, cashRisk: Math.round((Number(slipRisk) || 0) * 10000), priceCapMoneyline: Number(slipCap), limitPrice: slipPrice, sliceQuantity: Math.round((Number(slipSlice) || 0) * 10000) }) })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Order was rejected')
       slipStatus = `Parent order ${payload.id} created`
@@ -236,7 +270,7 @@
     if (!snapshot.health.tradingEnabled || resumingParentID) return
     resumingParentID = parent.id
     try {
-      const response = await fetch(`/api/parent-orders/${encodeURIComponent(parent.id)}/resume`, { method: 'POST' })
+      const response = await api(`/api/parent-orders/${encodeURIComponent(parent.id)}/resume`, { method: 'POST' })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Unable to resume follow order')
       snapshot = { ...snapshot, parentOrders: [payload as ParentOrder, ...snapshot.parentOrders.filter(order => order.id !== parent.id)] }
@@ -251,7 +285,7 @@
     if (!snapshot.health.tradingEnabled || cancelingParentID) return
     cancelingParentID = parent.id
     try {
-      const response = await fetch(`/api/parent-orders/${encodeURIComponent(parent.id)}`, { method: 'DELETE' })
+      const response = await api(`/api/parent-orders/${encodeURIComponent(parent.id)}`, { method: 'DELETE' })
       const payload = await response.json()
 		if (!response.ok) throw new Error(payload.error || 'Unable to cancel order')
       snapshot = { ...snapshot, parentOrders: [payload as ParentOrder, ...snapshot.parentOrders.filter(order => order.id !== parent.id)], orders: snapshot.orders.map(order => parent.childOrderIds.includes(order.id) ? { ...order, status: 'canceled', cashRisk: 0 } : order) }
@@ -271,7 +305,7 @@
     cancelingGroup = true
     cancelGroupStatus = 'Canceling…'
     try {
-      const response = await fetch('/api/parent-orders/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope, value }) })
+      const response = await api('/api/parent-orders/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope, value }) })
       const payload = await response.json()
       if (!response.ok && response.status !== 207) throw new Error(payload.error || 'Unable to cancel managed orders')
       const canceled = (payload.canceled || []) as ParentOrder[]
@@ -308,26 +342,59 @@
   }
   function connect() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const socket = new WebSocket(`${protocol}//${location.host}/api/ws`)
-    socket.onmessage = event => applyStream(JSON.parse(event.data))
-    socket.onclose = () => setTimeout(connect, 1500)
+    const next = new WebSocket(`${protocol}//${location.host}/api/ws`)
+    socket = next
+    next.onmessage = event => applyStream(JSON.parse(event.data))
+    next.onclose = () => {
+      if (socket !== next) return
+      socket = null
+      setTimeout(async () => {
+        if (socket) return
+        try {
+          const state = await (await api('/api/session')).json()
+          if (state.loginRequired && !state.authenticated) { authRequired = true; authenticated = false; return }
+        } catch { /* server unreachable; keep retrying */ }
+        connect()
+      }, 1500)
+    }
+  }
+  async function bootstrap() {
+    error = ''
+    try { const response = await api('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = normalizeSnapshot(await response.json()); snapshot.fills.forEach(fill => seenFillIDs.add(fill.id)); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
   }
   onMount(async () => {
     document.documentElement.dataset.theme = theme
-    try { const response = await fetch('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = normalizeSnapshot(await response.json()); snapshot.fills.forEach(fill => seenFillIDs.add(fill.id)); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
+    try {
+      const state = await (await api('/api/session')).json()
+      authRequired = Boolean(state.loginRequired); authenticated = Boolean(state.authenticated)
+    } catch { authRequired = false; authenticated = true }
+    if (authRequired && !authenticated) return
+    await bootstrap()
   })
   $: document.documentElement.dataset.theme = theme
 </script>
 
 <svelte:head><title>PMBattle</title><meta name="description" content="Fast sportsbook-style prediction market terminal"></svelte:head>
 
+{#if authRequired && !authenticated}
+<main class="login-page">
+  <form class="login-card" on:submit|preventDefault={login}>
+    <strong class="brand">PMBATTLE</strong>
+    <h1>Sign in</h1>
+    <p>This server asks for the password set in <code>PMBATTLE_PASSWORD</code> before showing markets or accepting orders.</p>
+    <label><span>Password</span><input type="password" autocomplete="current-password" bind:value={loginPassword} disabled={loginBusy} /></label>
+    <button type="submit" disabled={loginBusy || !loginPassword}>{loginBusy ? 'Signing in…' : 'Sign in'}</button>
+    {#if loginStatus}<p class="login-status" role="alert">{loginStatus}</p>{/if}
+  </form>
+</main>
+{:else}
 <div class="app-shell">
   <header class="topbar">
     <strong class="brand">PMBATTLE</strong>
     <nav class="primary-nav" aria-label="Application"><button class:active={view === 'schedule'} on:click={() => view = 'schedule'}>Schedule</button><button class:active={view === 'settings'} on:click={() => view = 'settings'}>Settings</button></nav>
     {#if view === 'schedule'}<label class="search"><span aria-hidden="true">⌕</span><input bind:value={query} aria-label="Search games" placeholder="Search game # or team" /></label>{/if}
     <div class="health" class:is-stale={snapshot.health.status !== 'ok'}><i></i><span>{snapshot.health.mode.toUpperCase()} · {snapshot.health.exchangeState.toUpperCase()}</span></div>
-    <div class="theme"><button class:active={theme === 'light'} on:click={() => setTheme('light')}>Light</button><button class:active={theme === 'dark'} on:click={() => setTheme('dark')}>Dark</button></div>
+    <div class="theme"><button class:active={theme === 'light'} on:click={() => setTheme('light')}>Light</button><button class:active={theme === 'dark'} on:click={() => setTheme('dark')}>Dark</button>{#if authRequired}<button class="sign-out" on:click={logout}>Sign out</button>{/if}</div>
   </header>
   {#if view === 'schedule'}
   <nav class="sports" aria-label="Sport filters">
@@ -501,3 +568,4 @@
     </aside>
   {/if}
 </div>
+{/if}

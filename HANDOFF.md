@@ -24,6 +24,9 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 ha
 
 ## Browser API
 
+- `GET /api/session` — `{loginRequired, authenticated}`; always reachable so the page knows whether to show the sign-in screen
+- `POST /api/login` — `{password}`; sets the `pmbattle_session` cookie (HTTP-only, same-site strict, 12 hours); five failures from one address lock sign-in for 15 minutes
+- `POST /api/logout` — ends the session
 - `GET /api/health` — service and feed state
 - `GET /api/snapshot` — events, open positions, recent settlements, managed orders, bankroll, and health
 - `GET /api/books/{ticker}` — select the UI order book; returns `202` while its first live snapshot is opening
@@ -39,7 +42,9 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 ha
 - `POST /api/parent-orders/{id}/resume` — manually resume an error-paused follow parent after fresh-book revalidation; locked when server trading is disabled
 - `GET /api/ws` — compact live events: `schedule`, `account_snapshot` (including settlements), `health`, `ticker`, `orderbook`, `book_stale`, `fill`, `parent_order`, `order`, `position`, and `market_lifecycle`
 
-Mutation routes are inert by default. Set `PMBATTLE_SIMULATED=false`, choose `PMBATTLE_KALSHI_ENV=demo` or `production`, and set `PMBATTLE_TRADING_ENABLED=true` to enable them. The Kalshi client receives the same startup flag and independently rejects place, amend, and cancel calls when it is off. Production submissions receive an explicit browser confirmation and are labeled `REAL ORDERS` / `LIVE TRADING`.
+Every non-GET `/api` request must carry `X-Requested-With: PMBattle`, or it is rejected with 403 before any handler runs; the browser helper `api()` in `App.svelte` adds it to every call. When `PMBATTLE_PASSWORD` is set, every `/api` route except `session` and `login` (the stream included) returns 401 without a valid session cookie, and the page shows a sign-in screen. Static files are always served so the page can render that screen.
+
+Mutation routes are inert by default. Set `PMBATTLE_SIMULATED=false`, choose `PMBATTLE_KALSHI_ENV=demo` or `production`, set `PMBATTLE_PASSWORD` (8+ characters; the server refuses to start with trading on and no password), and set `PMBATTLE_TRADING_ENABLED=true` to enable them. The Kalshi client receives the same startup flag and independently rejects place, amend, and cancel calls when it is off. Production submissions receive an explicit browser confirmation and are labeled `REAL ORDERS` / `LIVE TRADING`.
 
 ## Running the project
 
@@ -68,7 +73,8 @@ Open `http://127.0.0.1:8080/`. Use `PMBATTLE_TRADING_ENABLED=false` for read-onl
 
 ## Important operational details
 
-- The office server's existing IP allowlist remains the access boundary. PMBattle should sit behind its normal TLS/reverse-proxy setup.
+- The office server's existing IP allowlist remains the outer boundary, and `PMBATTLE_PASSWORD` is the inner one. PMBattle should sit behind the normal TLS/reverse-proxy setup; the session cookie is marked Secure automatically when the request arrived over TLS or with `X-Forwarded-Proto: https`.
+- `internal/server/auth.go` owns sign-in: SHA-256 digest compared in constant time, random 32-byte session tokens kept in memory (a restart signs everyone out), a per-address failure window, and the request-header check for every mutating call.
 - The Settings safety panel is informational only and cannot arm trading. It surfaces environment, feed/account sync, last account refresh, mapped markets, available cash, cash at risk, and the immutable startup lock reason. When trading is enabled, its note and the Orders-tray kill switch label now say whether real production orders or demo orders are armed; an earlier version wrongly said production was still blocked.
 - History separates exchange settlements from System audit. Audit records are never included in the startup snapshot or WebSocket stream; opening that subview requests the newest 100 records, and Load earlier follows the opaque numeric cursor. Each row has a compact lifecycle summary and a collapsible exact JSON payload.
 - Use a dedicated server directory for `pmbattle.db` and back it up normally.

@@ -57,6 +57,15 @@ func main() {
 		os.Exit(1)
 	}
 	tradingEnabled := tradingRequested && !simulated
+	password := os.Getenv("PMBATTLE_PASSWORD")
+	if password != "" && len(password) < 8 {
+		slog.Error("PMBATTLE_PASSWORD must be at least 8 characters")
+		os.Exit(1)
+	}
+	if tradingEnabled && password == "" {
+		slog.Error("refusing to enable order entry without PMBATTLE_PASSWORD; set a password so only signed-in browsers can place orders")
+		os.Exit(1)
+	}
 	maxCashRisk := domain.Money(0)
 	if raw := env("PMBATTLE_MAX_CASH_RISK", ""); raw != "" {
 		parsed, err := fixed.Parse(raw)
@@ -73,10 +82,10 @@ func main() {
 	}
 	service := app.New(app.Config{ScheduleURL: env("PMBATTLE_SCHEDULE_URL", "http://linefeednew.spankodds.com/supportSystem/rawschedule_v2_expanded.xml"), ScheduleInterval: interval, MarketInterval: marketInterval, ExchangeEnvironment: kalshiEnvironment, Simulated: simulated, TradingEnabled: tradingEnabled, MaxCashRisk: maxCashRisk}, store, kalshiClient)
 	static, _ := fs.Sub(webAssets, "web/dist")
-	httpServer := &http.Server{Addr: env("PMBATTLE_ADDR", ":8080"), Handler: server.New(service, static).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	httpServer := &http.Server{Addr: env("PMBATTLE_ADDR", ":8080"), Handler: server.New(service, static).RequirePassword(password).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go service.Run(ctx)
 	go func() {
-		slog.Info("PMBattle listening", "address", httpServer.Addr, "simulated", simulated)
+		slog.Info("PMBattle listening", "address", httpServer.Addr, "simulated", simulated, "trading_enabled", tradingEnabled, "login_required", password != "")
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server stopped", "error", err)
 			stop()
