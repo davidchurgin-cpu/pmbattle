@@ -20,6 +20,7 @@ The production connection is deliberately **read-only**. The terminal includes t
 - Demo-only iceberg parents that expose one configurable slice, refresh only after the active slice is completely filled, and cancel only the currently working slice
 - Demo-only follow parents that join the live same-side top bid, stay post-only, never cross automatically, resize within cash risk, pause on stale data or the fee-adjusted cap, and throttle queue-losing amendments
 - Demo-only kill switch scoped to the current event, strategy, Kalshi-managed parents, or every managed parent; partial cancellation failures are reported individually
+- Manual demo-only Resume action for follow parents paused by an amend error; it requires a fresh synchronized book and reruns the fee cap and cash-risk checks before retrying
 - Current Kalshi V2 amend requests use total/max-fillable count semantics and rotate the client order ID on every acknowledged reprice
 - Current Kalshi V2 fixed-point order requests, including correct NO-to-YES-book conversion and idempotent client order IDs
 - Durable parent orders that survive restart, deduplicate fills, and reduce remaining risk before fill notifications reach the browser
@@ -106,6 +107,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - A partial fill remains counted as cash at risk while its open-order reservation is reduced; canceling the remainder does not erase the risk already held in the resulting position.
 - Iceberg refresh failures pause the parent without creating a phantom child. Duplicate fills cannot refresh twice, and fee-rounding changes shrink future quantity before allowing the parent to exceed its cash-risk target.
 - Follow decisions are driven by the synchronized server book, not a browser-supplied price. A 750 ms amendment cooldown limits queue loss; active follow books stay subscribed when their game dropdown is closed.
+- A generic follow error remains manually paused indefinitely. Resume is never automatic and is rejected for stale books, terminal parents, non-follow strategies, missing active children, and every production connection.
 - Bulk cancellation reuses the guarded parent-order path, persists and publishes each acknowledgement immediately, and never claims full success when one child cancellation fails.
 - The UI clearly identifies simulated/live mode and stale data.
 - Credentials never pass through the browser.

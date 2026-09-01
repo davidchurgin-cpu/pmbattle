@@ -26,6 +26,7 @@
   let slipSlice = '25'
   let slipStatus = ''
   let cancelingParentID = ''
+  let resumingParentID = ''
   let cancelGroupScope = 'all'
   let cancelingGroup = false
   let cancelGroupStatus = ''
@@ -161,6 +162,22 @@
   function monitoredStatus(order: Order) {
     const parent = parentForOrder(order)
     return parent ? `${parent.strategy} · ${parent.status}${parent.strategy === 'follow' && parent.replaceCount ? ` · ${parent.replaceCount} reprices` : ''}` : order.status
+  }
+  const canResume = (parent: ParentOrder | undefined) => parent?.strategy === 'follow' && parent.status?.toLowerCase() === 'paused'
+  async function resumeParent(parent: ParentOrder) {
+    if (!snapshot.health.tradingEnabled || resumingParentID) return
+    resumingParentID = parent.id
+    try {
+      const response = await fetch(`/api/parent-orders/${encodeURIComponent(parent.id)}/resume`, { method: 'POST' })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || 'Unable to resume follow order')
+      snapshot = { ...snapshot, parentOrders: [payload as ParentOrder, ...snapshot.parentOrders.filter(order => order.id !== parent.id)] }
+      cancelGroupStatus = 'Follow order resumed after fresh-book checks.'
+    } catch (cause) {
+      cancelGroupStatus = cause instanceof Error ? cause.message : 'Unable to resume follow order'
+    } finally {
+      resumingParentID = ''
+    }
   }
   async function cancelParent(parent: ParentOrder) {
     if (!snapshot.health.tradingEnabled || cancelingParentID) return
@@ -322,7 +339,7 @@
         {#each snapshot.fills as fill}<div class="table-row"><span><b>{new Date(fill.createdAt).toLocaleTimeString()} · #{fill.rotation}</b><small>{fill.team} {fill.market}</small></span><span>{fill.exchange}</span><span>{qty(fill.quantity)}</span><span>{money(fill.rawPrice)}</span><span>{ml(fill.allInMoneyline)}</span><span>{money(fill.fee)}</span><span>{money(fill.cashRisk)}</span></div>{:else}<div class="empty">No fills yet</div>{/each}
       {:else if trayTab === 'orders'}
         {#if snapshot.health.tradingEnabled}<div class="cancel-scope-bar"><b>Demo kill switch</b><select bind:value={cancelGroupScope} aria-label="Cancel scope"><option value="all">All managed orders</option><option value="event" disabled={!selectedEvent}>Current game</option><option value="strategy:basic">Basic orders</option><option value="strategy:iceberg">Iceberg orders</option><option value="strategy:follow">Follow orders</option><option value="exchange:Kalshi">Kalshi managed orders</option></select><button disabled={cancelingGroup || activeParents.length === 0} on:click={cancelGroup}>{cancelingGroup ? 'Canceling…' : 'Cancel scope'}</button><small aria-live="polite">{cancelGroupStatus}</small></div>{/if}
-        {#each snapshot.orders as order}<div class="table-row compact"><span><b>#{order.rotation} {order.market}</b><small>{order.ticker}</small></span><span>{order.exchange}</span><span>{qty(order.quantity)}</span><span>{money(order.limitPrice)}</span><span>{monitoredStatus(order)}</span><span>—</span><span class="order-risk">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
+        {#each snapshot.orders as order}<div class="table-row compact"><span><b>#{order.rotation} {order.market}</b><small>{order.ticker}</small></span><span>{order.exchange}</span><span>{qty(order.quantity)}</span><span>{money(order.limitPrice)}</span><span>{monitoredStatus(order)}</span><span>—</span><span class="order-risk">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? 'Resuming…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
       {:else if trayTab === 'positions'}
         {#each snapshot.positions as position}<div class="table-row compact"><span><b>#{position.rotation} {position.market}</b><small>{position.ticker}</small></span><span>{position.exchange}</span><span>{qty(position.quantity)}</span><span>{money(position.averagePrice)}</span><span>{money(position.currentPrice)}</span><span>—</span><span>{money(position.unrealizedPnl)}</span></div>{:else}<div class="empty">No positions</div>{/each}
       {:else}<div class="empty">Historical audit records will appear here.</div>{/if}
@@ -354,7 +371,7 @@
       <div class="monitor-body">
         <header><b>Working orders</b><button on:click={() => showActivity('orders')}>Full orders</button></header>
         {#each workingOrders.slice(0, 5) as order}
-          <div class="monitor-row"><span><b>{order.market || order.ticker}</b><small>{order.exchange} · {monitoredStatus(order)}</small></span><span><b>{qty(Math.max(0, order.quantity - order.filledQuantity))}</b><small>remaining</small></span>{#if snapshot.health.tradingEnabled && parentForOrder(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? '…' : 'Cancel'}</button>{/if}</div>
+          <div class="monitor-row"><span><b>{order.market || order.ticker}</b><small>{order.exchange} · {monitoredStatus(order)}</small></span><span><b>{qty(Math.max(0, order.quantity - order.filledQuantity))}</b><small>remaining</small></span><span class="monitor-actions">{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? '…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && parentForOrder(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? '…' : 'Cancel'}</button>{/if}</span></div>
         {:else}<div class="monitor-empty">No working orders</div>{/each}
         <header><b>Recent fills</b><button on:click={() => showActivity('fills')}>Full fills</button></header>
         {#each snapshot.fills.slice(0, 3) as fill}

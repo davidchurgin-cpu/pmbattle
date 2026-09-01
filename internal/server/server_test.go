@@ -41,3 +41,13 @@ func TestBulkCancelEndpointRejectsUnknownScope(t *testing.T) {
 		t.Fatalf("status %d, want %d; body=%s", response.Code, http.StatusBadRequest, response.Body.String())
 	}
 }
+
+func TestResumeEndpointIsLockedInProduction(t *testing.T) {
+	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
+	request := httptest.NewRequest(http.MethodPost, "/api/parent-orders/parent-1/resume", nil)
+	response := httptest.NewRecorder()
+	New(service, nil).Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
+	}
+}

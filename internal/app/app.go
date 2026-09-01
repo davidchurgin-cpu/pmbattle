@@ -273,6 +273,52 @@ func (s *Service) CancelParentOrder(ctx context.Context, id string) (domain.Pare
 	return parent, nil
 }
 
+func (s *Service) ResumeParentOrder(ctx context.Context, id string) (domain.ParentOrder, error) {
+	if !s.Snapshot().Health.TradingEnabled {
+		return domain.ParentOrder{}, orderengine.ErrDisabled
+	}
+	existing, ok := s.orderEngine.Parent(id)
+	if !ok {
+		return domain.ParentOrder{}, orderengine.ErrNotFound
+	}
+	book, ok := s.books.Get(existing.Ticker)
+	if !ok || book.Stale {
+		return existing, errors.New("order book is not synchronized")
+	}
+	resumed, err := s.orderEngine.ResumeFollow(id)
+	if err != nil {
+		return resumed, err
+	}
+	_ = s.store.Audit(ctx, "follow_resume_requested", map[string]any{"parent": resumed, "book_sequence": book.Sequence})
+	results := s.orderEngine.HandleBook(ctx, book)
+	final := resumed
+	published := false
+	var strategyErr error
+	for _, result := range results {
+		if result.Parent.ID == id {
+			final = result.Parent
+			strategyErr = result.Err
+			published = result.Changed
+		}
+	}
+	s.publishFollowResults(results, book.Sequence)
+	if !published {
+		s.mu.Lock()
+		s.upsertParentLocked(final)
+		s.recalculateParentRiskLocked()
+		s.mu.Unlock()
+		if err := s.store.SaveParentOrder(ctx, final); err != nil {
+			slog.Error("persist resumed follow", "parent_id", final.ID, "error", err)
+		}
+		s.broadcast(domain.StreamEvent{Type: "parent_order", Data: final})
+	}
+	_ = s.store.Audit(ctx, "follow_resume_result", map[string]any{"parent": final, "strategy_error": errorText(strategyErr)})
+	if strategyErr != nil {
+		return final, strategyErr
+	}
+	return final, nil
+}
+
 // CancelParentOrders applies the same guarded parent cancellation path to a
 // narrowly defined group. Each acknowledged parent is persisted and published
 // immediately; failures are returned explicitly instead of hiding partial work.
@@ -962,7 +1008,11 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 }
 
 func (s *Service) applyFollowBook(book domain.OrderBook) {
-	for _, result := range s.orderEngine.HandleBook(context.Background(), book) {
+	s.publishFollowResults(s.orderEngine.HandleBook(context.Background(), book), book.Sequence)
+}
+
+func (s *Service) publishFollowResults(results []orderengine.FollowResult, bookSequence int64) {
+	for _, result := range results {
 		if !result.Changed || result.Parent.ID == "" {
 			continue
 		}
@@ -976,7 +1026,7 @@ func (s *Service) applyFollowBook(book domain.OrderBook) {
 		if err := s.store.SaveParentOrder(context.Background(), result.Parent); err != nil {
 			slog.Error("persist follow decision", "parent_id", result.Parent.ID, "error", err)
 		}
-		audit := map[string]any{"parent": result.Parent, "book_sequence": book.Sequence}
+		audit := map[string]any{"parent": result.Parent, "book_sequence": bookSequence}
 		if result.Order != nil {
 			audit["amended_order"] = result.Order
 		}
@@ -990,6 +1040,13 @@ func (s *Service) applyFollowBook(book domain.OrderBook) {
 			s.broadcast(domain.StreamEvent{Type: "order", Data: *result.Order})
 		}
 	}
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func followPrice(book domain.OrderBook, side string) (domain.Money, bool) {

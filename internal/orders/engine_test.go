@@ -341,3 +341,42 @@ func TestFollowNoUsesComplementOfBestYesAskAndPausesOnAmendError(t *testing.T) {
 		t.Fatalf("no-side follow was unsafe: results=%+v amended=%+v", results, executor.amended)
 	}
 }
+
+func TestPausedFollowRequiresManualResumeAndFreshRevalidation(t *testing.T) {
+	executor := &fakeExecutor{failAmend: true}
+	engine := New(true, executor)
+	request := validRequest()
+	request.Strategy = "follow"
+	request.Policy = "post_only"
+	request.PriceCapMoneyline = -300
+	parent, _, err := engine.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	book := domain.OrderBook{Ticker: parent.Ticker, Yes: []domain.BookLevel{{Price: 5100, Quantity: domain.Dollar}}}
+	results := engine.HandleBook(context.Background(), book)
+	if len(results) != 1 || results[0].Parent.Status != "paused" || results[0].Err == nil {
+		t.Fatalf("amend failure did not pause follow: %+v", results)
+	}
+	if got := engine.HandleBook(context.Background(), book); len(got) != 0 || len(executor.amended) != 1 {
+		t.Fatalf("paused follow retried without manual resume: results=%+v amended=%d", got, len(executor.amended))
+	}
+	executor.failAmend = false
+	resumed, err := engine.ResumeFollow(parent.ID)
+	if err != nil || resumed.Status != "working" {
+		t.Fatalf("manual resume failed: parent=%+v err=%v", resumed, err)
+	}
+	results = engine.HandleBook(context.Background(), book)
+	if len(results) != 1 || results[0].Err != nil || results[0].Parent.Status != "working" || results[0].Parent.ReplaceCount != 1 || len(executor.amended) != 2 {
+		t.Fatalf("resumed follow did not revalidate/reprice: results=%+v amended=%+v", results, executor.amended)
+	}
+	if _, err := engine.Cancel(context.Background(), parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.ResumeFollow(parent.ID); !errors.Is(err, ErrNotResumable) {
+		t.Fatalf("canceled follow resumed with %v", err)
+	}
+	if _, err := New(false, executor).ResumeFollow(parent.ID); !errors.Is(err, ErrDisabled) {
+		t.Fatalf("disabled engine resume got %v", err)
+	}
+}

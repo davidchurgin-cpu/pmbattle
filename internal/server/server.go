@@ -36,6 +36,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/books/{ticker}", s.releaseBook)
 	mux.HandleFunc("POST /api/parent-orders", s.createParentOrder)
 	mux.HandleFunc("POST /api/parent-orders/cancel", s.cancelParentOrders)
+	mux.HandleFunc("POST /api/parent-orders/{id}/resume", s.resumeParentOrder)
 	mux.HandleFunc("DELETE /api/parent-orders/{id}", s.cancelParentOrder)
 	mux.HandleFunc("GET /api/ws", s.ws)
 	if s.static != nil {
@@ -134,6 +135,22 @@ func (s *Server) cancelParentOrder(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		}
 		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, parent)
+}
+func (s *Server) resumeParentOrder(w http.ResponseWriter, r *http.Request) {
+	parent, err := s.service.ResumeParentOrder(r.Context(), r.PathValue("id"))
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, orderengine.ErrDisabled) {
+			status = http.StatusForbidden
+		} else if errors.Is(err, orderengine.ErrNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, orderengine.ErrNotResumable) || strings.Contains(err.Error(), "synchronized") {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]any{"error": err.Error(), "parent": parent})
 		return
 	}
 	writeJSON(w, http.StatusOK, parent)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,5 +201,26 @@ func TestScopedCancelMatchesManagedParentsAndReportsPartialFailures(t *testing.T
 	}
 	if _, err := service.CancelParentOrders(context.Background(), CancelScopeInput{Scope: "strategy", Value: "unknown"}); !errors.Is(err, ErrInvalidCancelScope) {
 		t.Fatalf("invalid strategy got %v", err)
+	}
+}
+
+func TestResumeFollowRefusesStaleBookBeforeEngineStateChanges(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "resume-stale.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, &appFakeAdapter{})
+	parent := domain.ParentOrder{ID: "parent-1", Exchange: "Kalshi", EventID: "event-1", Ticker: "TEST", Side: "yes", Strategy: "follow", Status: "paused", CashRiskTarget: 100 * domain.Dollar, RemainingRisk: 100 * domain.Dollar, ReservedRisk: 50 * domain.Dollar, LimitPrice: 5000, Quantity: 100 * domain.Dollar, ChildOrderIDs: []string{"child-1"}, Children: []domain.ChildOrderState{{ID: "child-1", Status: "resting", Quantity: 100 * domain.Dollar}}}
+	service.orderEngine.Restore([]domain.ParentOrder{parent})
+	service.snapshot.ParentOrders = []domain.ParentOrder{parent}
+	service.books.Snapshot(domain.OrderBook{Ticker: "TEST", Yes: []domain.BookLevel{{Price: 5100, Quantity: domain.Dollar}}})
+	_, _ = service.books.MarkStale("TEST")
+	if _, err := service.ResumeParentOrder(context.Background(), parent.ID); err == nil || !strings.Contains(err.Error(), "synchronized") {
+		t.Fatalf("stale resume got %v", err)
+	}
+	current, ok := service.orderEngine.Parent(parent.ID)
+	if !ok || current.Status != "paused" {
+		t.Fatalf("stale resume changed engine state: %+v", current)
 	}
 }

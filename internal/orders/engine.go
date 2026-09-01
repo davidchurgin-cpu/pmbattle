@@ -25,6 +25,7 @@ var (
 	ErrInvalidOrder        = errors.New("invalid parent order")
 	ErrPriceCap            = errors.New("fee-adjusted price exceeds the parent order cap")
 	ErrNotFound            = errors.New("parent order not found")
+	ErrNotResumable        = errors.New("parent order is not a paused follow order with an active child")
 )
 
 type Executor interface {
@@ -100,6 +101,13 @@ func (e *Engine) ParentForChild(childOrderID string) (domain.ParentOrder, bool) 
 		}
 	}
 	return domain.ParentOrder{}, false
+}
+
+func (e *Engine) Parent(parentID string) (domain.ParentOrder, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	parent, ok := e.parents[parentID]
+	return cloneParent(parent), ok
 }
 
 func (e *Engine) Create(ctx context.Context, request CreateRequest) (domain.ParentOrder, domain.Order, error) {
@@ -192,6 +200,31 @@ func (e *Engine) HandleBook(ctx context.Context, book domain.OrderBook) []Follow
 		}
 	}
 	return results
+}
+
+// ResumeFollow only clears the manual pause. The caller must immediately feed
+// a synchronized current book through HandleBook before treating it as active.
+func (e *Engine) ResumeFollow(parentID string) (domain.ParentOrder, error) {
+	if !e.enabled || e.exec == nil {
+		return domain.ParentOrder{}, ErrDisabled
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	parent, ok := e.parents[parentID]
+	if !ok {
+		return domain.ParentOrder{}, ErrNotFound
+	}
+	if parent.Strategy != "follow" || strings.ToLower(strings.TrimSpace(parent.Status)) != "paused" || parent.RemainingRisk <= 0 || activeChildIndex(parent) < 0 {
+		return cloneParent(parent), ErrNotResumable
+	}
+	parent.Status = "working"
+	if parent.FilledQuantity > 0 {
+		parent.Status = "partially_filled"
+	}
+	parent.LastRepricedAt = time.Time{}
+	parent.UpdatedAt = e.now()
+	e.parents[parentID] = parent
+	return cloneParent(parent), nil
 }
 
 func (e *Engine) handleFollowParent(ctx context.Context, parentID string, book domain.OrderBook) FollowResult {

@@ -46,6 +46,10 @@
 .cancel-order { border: 1px solid color-mix(in srgb, var(--ask) 55%, var(--line)); border-radius: 4px; background: transparent; color: var(--ask); padding: 4px 6px; font: inherit; cursor: pointer; }
 .cancel-order:hover:not(:disabled) { background: color-mix(in srgb, var(--ask) 10%, transparent); }
 .cancel-order:disabled { cursor: wait; opacity: .55; }
+.resume-order { border: 1px solid color-mix(in srgb, var(--bid) 60%, var(--line)); border-radius: 4px; background: transparent; color: var(--bid); padding: 4px 6px; font: inherit; cursor: pointer; }
+.resume-order:hover:not(:disabled) { background: color-mix(in srgb, var(--bid) 10%, transparent); }
+.resume-order:disabled { cursor: wait; opacity: .55; }
+.monitor-actions { display: flex; gap: 5px; align-items: center; }
 .monitor-empty { padding: 14px; color: var(--muted); font-size: 9px; text-align: center; }
 
 .cancel-scope-bar { display: grid; grid-template-columns: auto minmax(150px, 220px) auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 7px 10px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
