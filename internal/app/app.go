@@ -31,6 +31,7 @@ type Config struct {
 
 type Service struct {
 	mu              sync.RWMutex
+	orderMu         sync.Mutex
 	cfg             Config
 	store           *storage.Store
 	schedule        schedule.Client
@@ -55,7 +56,7 @@ func New(cfg Config, store *storage.Store, adapter exchange.Adapter) *Service {
 	} else if strings.EqualFold(cfg.ExchangeEnvironment, "demo") {
 		mode = "demo"
 	}
-	s.snapshot.Health = domain.Health{Status: "starting", Mode: mode, ExchangeState: "disconnected", TradingEnabled: cfg.DemoTrading}
+	s.snapshot.Health = domain.Health{Status: "starting", Mode: mode, ExchangeState: "disconnected", AccountState: "pending", TradingEnabled: cfg.DemoTrading, TradingLock: tradingLockReason(cfg, mode)}
 	s.snapshot.ParentOrders = make([]domain.ParentOrder, 0)
 	return s
 }
@@ -134,7 +135,13 @@ func (s *Service) Snapshot() domain.Snapshot {
 	data, _ := json.Marshal(s.snapshot)
 	var copy domain.Snapshot
 	_ = json.Unmarshal(data, &copy)
+	copy.AvailableToAllocate = s.availableParentCashLocked()
 	return copy
+}
+
+func (s *Service) broadcastAccountSummary() {
+	snapshot := s.Snapshot()
+	s.broadcast(domain.StreamEvent{Type: "account_summary", Data: domain.AccountSummary{Bankroll: snapshot.Bankroll, AvailableToAllocate: snapshot.AvailableToAllocate, AtRisk: snapshot.AtRisk}})
 }
 
 func (s *Service) Book(ticker string) (domain.OrderBook, bool) { return s.books.Get(ticker) }
@@ -155,6 +162,7 @@ type CreateParentOrderInput struct {
 }
 
 var ErrInvalidCancelScope = errors.New("invalid cancel scope")
+var ErrInsufficientAvailableBalance = errors.New("cash-risk target exceeds available bankroll")
 
 type CancelScopeInput struct {
 	Scope string `json:"scope"`
@@ -175,16 +183,24 @@ type CancelScopeResult struct {
 }
 
 func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrderInput) (domain.ParentOrder, error) {
+	// Serialize parent creation so two browser requests cannot both spend the
+	// same available balance before either exchange acknowledgement is applied.
+	s.orderMu.Lock()
+	defer s.orderMu.Unlock()
 	s.mu.RLock()
 	tradingEnabled := s.snapshot.Health.TradingEnabled
 	available := s.availableBooks[input.Ticker]
 	event, quote, marketLabel, rotation, found := s.resolveOrderSelection(input.EventID, input.Ticker, input.Side)
+	availableCash := s.availableParentCashLocked()
 	s.mu.RUnlock()
 	if !tradingEnabled {
 		return domain.ParentOrder{}, orderengine.ErrDisabled
 	}
 	if !available || !found {
 		return domain.ParentOrder{}, orderengine.ErrInvalidOrder
+	}
+	if input.CashRisk <= 0 || input.CashRisk > availableCash {
+		return domain.ParentOrder{}, ErrInsufficientAvailableBalance
 	}
 	book, ok := s.books.Get(input.Ticker)
 	if !ok || book.Stale {
@@ -215,6 +231,10 @@ func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrder
 	s.mu.Lock()
 	s.snapshot.ParentOrders = append([]domain.ParentOrder{parent}, s.snapshot.ParentOrders...)
 	s.upsertOrderLocked(child)
+	s.snapshot.Bankroll -= parent.ReservedRisk
+	if s.snapshot.Bankroll < 0 {
+		s.snapshot.Bankroll = 0
+	}
 	s.recalculateParentRiskLocked()
 	s.mu.Unlock()
 	if err := s.store.SaveParentOrder(ctx, parent); err != nil {
@@ -223,10 +243,41 @@ func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrder
 	_ = s.store.Audit(ctx, "parent_order_acknowledged", map[string]any{"parent": parent, "child": child})
 	s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
 	s.broadcast(domain.StreamEvent{Type: "order", Data: child})
+	s.broadcastAccountSummary()
 	if parent.Strategy == "follow" {
 		s.queueBookRefresh()
 	}
 	return parent, nil
+}
+
+func (s *Service) availableParentCashLocked() domain.Money {
+	available := s.snapshot.Bankroll
+	for _, parent := range s.snapshot.ParentOrders {
+		if parentOrderTerminal(parent.Status) {
+			continue
+		}
+		unreserved := parent.RemainingRisk - parent.ReservedRisk
+		if unreserved > 0 {
+			available -= unreserved
+		}
+	}
+	if available < 0 {
+		return 0
+	}
+	return available
+}
+
+func tradingLockReason(cfg Config, mode string) string {
+	if cfg.DemoTrading {
+		return ""
+	}
+	if strings.EqualFold(cfg.ExchangeEnvironment, "production") {
+		return "Production order entry is hard-locked."
+	}
+	if mode == "simulated" {
+		return "Simulated mode is read-only."
+	}
+	return "Demo order entry is off until explicitly enabled on the server."
 }
 
 func (s *Service) CancelParentOrder(ctx context.Context, id string) (domain.ParentOrder, error) {
@@ -274,6 +325,7 @@ func (s *Service) CancelParentOrder(ctx context.Context, id string) (domain.Pare
 	for _, child := range updatedChildren {
 		s.broadcast(domain.StreamEvent{Type: "order", Data: child})
 	}
+	s.broadcastAccountSummary()
 	if parent.Strategy == "follow" {
 		s.queueBookRefresh()
 	}
@@ -678,6 +730,8 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 	s.setAvailableBooks(tickers)
 	slog.Info("market mapping complete", "accepted_markets", accepted, "available_books", len(tickers))
 	s.reconcileAccount(ctx, false)
+	accountTicker := time.NewTicker(30 * time.Second)
+	defer accountTicker.Stop()
 	backoff := time.Second
 	for {
 		if ctx.Err() != nil {
@@ -715,6 +769,8 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 					slog.Warn("exchange stream", "error", err)
 				}
 				ended = true
+			case <-accountTicker.C:
+				s.reconcileAccount(ctx, true)
 			}
 		}
 		_ = subscription.Close()
@@ -724,8 +780,13 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 }
 
 func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
+	s.mu.Lock()
+	s.snapshot.Health.AccountState = "syncing"
+	s.mu.Unlock()
+	accountOK := true
 	if balance, balanceErr := s.exchange.Balance(ctx); balanceErr != nil {
 		slog.Warn("balance reconciliation failed", "error", balanceErr)
+		accountOK = false
 	} else {
 		s.mu.Lock()
 		s.snapshot.Bankroll = balance
@@ -734,6 +795,7 @@ func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
 	orders, positions, fills, err := s.exchange.Snapshot(ctx)
 	if err != nil {
 		slog.Warn("account reconciliation failed", "error", err)
+		accountOK = false
 	} else {
 		reconciledParents := make([]domain.ParentOrder, 0)
 		for _, order := range orders {
@@ -774,8 +836,17 @@ func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
 	}
 	s.reconcileSettlements(ctx)
 	s.reconcileParentFills(ctx, publish)
+	s.mu.Lock()
+	if accountOK {
+		s.snapshot.Health.AccountState = "ready"
+		s.snapshot.Health.AccountUpdated = time.Now().UTC()
+	} else {
+		s.snapshot.Health.AccountState = "degraded"
+	}
+	s.mu.Unlock()
 	snapshot := s.Snapshot()
-	s.broadcast(domain.StreamEvent{Type: "account_snapshot", Data: domain.AccountSnapshot{ParentOrders: snapshot.ParentOrders, Orders: snapshot.Orders, Positions: snapshot.Positions, Settlements: snapshot.Settlements, Fills: snapshot.Fills, Bankroll: snapshot.Bankroll, AtRisk: snapshot.AtRisk}})
+	s.broadcast(domain.StreamEvent{Type: "health", Data: snapshot.Health})
+	s.broadcast(domain.StreamEvent{Type: "account_snapshot", Data: domain.AccountSnapshot{ParentOrders: snapshot.ParentOrders, Orders: snapshot.Orders, Positions: snapshot.Positions, Settlements: snapshot.Settlements, Fills: snapshot.Fills, Bankroll: snapshot.Bankroll, AvailableToAllocate: snapshot.AvailableToAllocate, AtRisk: snapshot.AtRisk}})
 }
 
 func (s *Service) reconcileSettlements(ctx context.Context) {
@@ -902,11 +973,14 @@ func (s *Service) setAvailableBooks(tickers []string) {
 	}
 	s.mu.Lock()
 	s.availableBooks = available
+	s.snapshot.Health.MappedMarkets = len(available)
 	active := s.activeBook
 	if active != "" && !available[active] {
 		s.activeBook = ""
 	}
+	health := s.snapshot.Health
 	s.mu.Unlock()
+	s.broadcast(domain.StreamEvent{Type: "health", Data: health})
 	s.queueBookRefresh()
 }
 
@@ -1116,6 +1190,7 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 				s.queueBookRefresh()
 			}
 			s.broadcast(event)
+			s.broadcastAccountSummary()
 		}
 	case "position":
 		if position, ok := event.Data.(domain.Position); ok {
@@ -1135,6 +1210,7 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 			s.recalculateParentRiskLocked()
 			s.mu.Unlock()
 			s.broadcast(event)
+			s.broadcastAccountSummary()
 		}
 	default:
 		s.broadcast(event)
@@ -1173,6 +1249,7 @@ func (s *Service) publishFollowResults(results []orderengine.FollowResult, bookS
 		if result.Order != nil {
 			s.broadcast(domain.StreamEvent{Type: "order", Data: *result.Order})
 		}
+		s.broadcastAccountSummary()
 	}
 }
 
@@ -1263,6 +1340,7 @@ func (s *Service) applyFill(fill domain.Fill, publish bool) bool {
 	s.mu.Unlock()
 	_ = s.store.Audit(context.Background(), "fill", fill)
 	if publish {
+		s.broadcastAccountSummary()
 		s.broadcast(domain.StreamEvent{Type: "fill", Data: fill})
 	}
 	return true
@@ -1436,8 +1514,9 @@ func (s *Service) setExchangeHealth(state string, latency int64) {
 	s.mu.Lock()
 	s.snapshot.Health.ExchangeState = state
 	s.snapshot.Health.LatencyMS = latency
+	health := s.snapshot.Health
 	s.mu.Unlock()
-	s.broadcast(domain.StreamEvent{Type: "health", Data: s.snapshot.Health})
+	s.broadcast(domain.StreamEvent{Type: "health", Data: health})
 }
 
 func firstRotation(event domain.CanonicalEvent) string {

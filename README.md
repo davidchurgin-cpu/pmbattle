@@ -28,6 +28,9 @@ The production connection is deliberately **read-only**. The terminal includes t
 - Paginated REST recovery of every open Kalshi position and settled market, with fixed-point exposure, fees, realized P&L, and recent settlement history persisted across restarts
 - A live Positions view for unsettled exposure and a separate History view for up to 500 recent settlements; settled markets never count as current cash at risk
 - Dashboard cash at risk includes authenticated open-position exposure plus resting-order risk, with the managed parent total used as a conservative fallback during feed timing gaps
+- One shared available-bankroll guard serializes parent submissions and reserves each parent's full future cash-risk target, including hidden iceberg slices; an insufficient request is rejected before any exchange call
+- Available cash, new-order capacity, and cash at risk update in the browser before a live fill notification is displayed
+- A compact Settings safety panel shows environment, exchange/account state, last reconciliation, mapped-market count, available trading balance, cash at risk, and the server-controlled order-entry lock
 - Always-visible dashboard order monitor with working quantities and recent fills, plus immediate visual alerts for every newly streamed full or partial fill
 - Explicit, accessible side identities across the board, book, and slip: Away blue, Home purple, Over green, and Under amber
 - Sequence-checked in-memory order books with stale-book detection
@@ -113,10 +116,12 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - A generic follow error remains manually paused indefinitely. Resume is never automatic and is rejected for stale books, terminal parents, non-follow strategies, missing active children, and every production connection.
 - Bulk cancellation reuses the guarded parent-order path, persists and publishes each acknowledgement immediately, and never claims full success when one child cancellation fails.
 - The UI clearly identifies simulated/live mode and stale data.
+- Kalshi's `balance` is treated as available trading cash, not total account equity. Account orders, positions, settlements, and available cash are reconciled every 30 seconds while connected, as well as at startup and after reconnects.
 - Credentials never pass through the browser.
 - The server enforces same-origin browser WebSockets and basic security headers.
 - The production API and exchange adapter cannot place, amend, or cancel orders. PMBattle must not send any real-money order action without the user's explicit permission at that time.
 - Demo order submission remains off unless `PMBATTLE_TRADING_ENABLED=true` is deliberately supplied with demo credentials. The engine rejects stale books, unknown mappings, invalid sides, requests above $20,000 cash risk, unsupported strategies, and prices beyond the fee-adjusted cap.
+- Parent creation is serialized under one server lock. The full parent target must fit available Kalshi cash after subtracting unexposed commitments already reserved for managed iceberg/follow parents; a rejected target never reaches the adapter.
 
 See [HANDOFF.md](HANDOFF.md) for architecture, operational details, known limitations, and the next implementation milestone.
 

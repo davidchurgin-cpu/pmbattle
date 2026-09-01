@@ -40,6 +40,7 @@ The mutation routes are present for demo validation but are inert by default. St
 ## Important operational details
 
 - The office server's existing IP allowlist remains the access boundary. PMBattle should sit behind its normal TLS/reverse-proxy setup.
+- The Settings safety panel is informational only and cannot arm trading. It surfaces environment, feed/account sync, last account refresh, mapped markets, available cash, cash at risk, and the immutable startup lock reason.
 - Use a dedicated server directory for `pmbattle.db` and back it up normally.
 - Use the server's secret/environment manager for the Kalshi key ID and PEM path.
 - Start with Kalshi demo. Confirm the health indicator and market mappings before considering production data.
@@ -63,6 +64,10 @@ The mutation routes are present for demo validation but are inert by default. St
 - Every fill carries its exchange order ID. The engine applies each fill ID once, updates filled quantity/risk, reduces the remaining reservation, persists the parent, and only then publishes the parent followed by the fill. Filled risk remains included in the station-wide cash-at-risk total.
 - Startup and account-stream reconnects query Kalshi fill history by PMBattle child order ID and replay it oldest-first. The initial `account_snapshot` refresh is quiet so recovered fills do not look like new live alerts.
 - The account snapshot also reads Kalshi's available balance in cents and converts it into PMBattle's four-decimal fixed-point bankroll without floating-point math.
+- Kalshi documents `balance` as cash currently available for trading; it is not total equity. The UI therefore labels it Available to trade. While the account WebSocket is connected, PMBattle refreshes balance, resting orders, positions, settlements, and managed fill recovery every 30 seconds in addition to startup/reconnect reconciliation.
+- Parent creation holds one process-wide submission lock. Before any exchange call, the full cash-risk target must fit the last authenticated available balance after subtracting unexposed commitments promised to active managed parents. On acknowledgement, the active child's reserved risk is immediately removed from local available cash; periodic REST reconciliation replaces that conservative estimate with Kalshi's authoritative value.
+- This shared guard treats an iceberg's hidden future slices and a follow parent's unexposed remaining target as committed bankroll. Concurrent HTTP requests cannot both pass against the same cash, and insufficient requests return before `PlaceOrder` is called.
+- The compact `account_summary` browser event carries authoritative available cash, allocatable new-order capacity, and cash at risk after every order/position/strategy transition. Fill processing publishes this summary before the fill alert, preserving the risk-before-UI invariant.
 - Account restart/reconnect reconciliation follows every `cursor` page for resting orders and nonzero, unsettled positions. Signed position quantities become explicit YES/NO sides, while exposure, traded amount, realized P&L, and fees remain fixed-point.
 - Settled markets come from Kalshi's separate paginated settlement endpoint. PMBattle uses a one-second overlap on incremental reads, upserts by exchange/ticker in SQLite, retains the 500 latest records in the browser snapshot, and shows revenue, fees, and net P&L in History. Settlements are deliberately excluded from current cash at risk.
 - Station cash at risk is the larger of (a) authenticated open-position exposure plus nonterminal order risk and (b) the managed parent engine's filled-plus-reserved total. This avoids double-counting managed children while remaining conservative during account-stream timing gaps.
@@ -77,6 +82,7 @@ The mutation routes are present for demo validation but are inert by default. St
 - Initial league-to-series routing covers the major US leagues plus selected top soccer leagues. Add aliases as new schedule leagues are enabled; unknown leagues intentionally load no Kalshi series.
 - The current general Kalshi fee rule is versioned in one module, but market-specific fee exceptions must be added before any production order preview.
 - Follow has automated coverage with a fake demo adapter and the current V2 amend contract, but it has not yet been manually exercised with separate Kalshi demo credentials. Production remains hard locked.
+- The shared-bankroll gate is process-local and currently covers the single Kalshi adapter. Cross-process or multi-exchange reservation requires the future routing coordinator and must not be inferred from this first-exchange guard.
 - Completed parents are retained in SQLite without pruning yet. A retention policy will be needed as history grows.
 - Open-position and settlement restart reconciliation has recorded multi-page fixture coverage and was smoke-tested read-only against production on August 31, 2026: 7 open positions, 5 resting orders, and 50 recent settlements rendered successfully. The displayed $62,989.94 cash at risk exactly matched position exposure plus resting-order risk; trading remained disabled.
 - Production mutation is intentionally impossible and must remain so unless a separate review is completed and the user explicitly authorizes real-money trading.
@@ -100,7 +106,7 @@ GitHub Actions runs these checks and publishes portable Windows/Linux binaries o
 
 ## Lightweight checkpoint
 
-- Browser production bundle: about 80.4 KB JavaScript and 20.8 KB CSS before gzip; there are no runtime browser dependencies beyond Svelte.
+- Browser production bundle: about 82.9 KB JavaScript and 21.8 KB CSS before gzip; there are no runtime browser dependencies beyond Svelte.
 - Production source maps are disabled and old side-panel CSS/dead book code were removed.
-- Runtime background work is bounded: one 30-second schedule ticker, one authenticated account stream, and one consolidated order-book stream containing only the selected UI book plus active follow books.
+- Runtime background work is bounded: one 30-second schedule ticker, one 30-second authenticated account-reconciliation ticker, one account stream, and one consolidated order-book stream containing only the selected UI book plus active follow books.
 - The stripped single Windows executable is about 12.0 MB, primarily because it embeds the pure-Go SQLite implementation and the complete browser app; deployment still requires only that one executable.

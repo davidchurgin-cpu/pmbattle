@@ -2,12 +2,28 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/davidchurgin-cpu/pmbattle/internal/app"
+	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
 )
+
+func TestProductionHealthDeclaresHardTradingLock(t *testing.T) {
+	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	response := httptest.NewRecorder()
+	New(service, nil).Handler().ServeHTTP(response, request)
+	var health domain.Health
+	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusOK || health.TradingEnabled || health.TradingLock != "Production order entry is hard-locked." {
+		t.Fatalf("unsafe production health response: status=%d health=%+v", response.Code, health)
+	}
+}
 
 func TestParentOrderEndpointIsLockedByDefault(t *testing.T) {
 	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)

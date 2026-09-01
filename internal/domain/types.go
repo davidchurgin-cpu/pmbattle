@@ -220,8 +220,12 @@ type Health struct {
 	Mode            string    `json:"mode"`
 	ScheduleUpdated time.Time `json:"scheduleUpdated"`
 	ExchangeState   string    `json:"exchangeState"`
+	AccountState    string    `json:"accountState"`
+	AccountUpdated  time.Time `json:"accountUpdated,omitempty"`
+	MappedMarkets   int       `json:"mappedMarkets"`
 	LatencyMS       int64     `json:"latencyMs"`
 	TradingEnabled  bool      `json:"tradingEnabled"`
+	TradingLock     string    `json:"tradingLock,omitempty"`
 }
 
 type Preferences struct {
@@ -244,26 +248,34 @@ type Settings struct {
 }
 
 type Snapshot struct {
-	Events       []CanonicalEvent `json:"events"`
-	ParentOrders []ParentOrder    `json:"parentOrders"`
-	Orders       []Order          `json:"orders"`
-	Positions    []Position       `json:"positions"`
-	Settlements  []Settlement     `json:"settlements"`
-	Fills        []Fill           `json:"fills"`
-	Health       Health           `json:"health"`
-	Bankroll     Money            `json:"bankroll"`
-	AtRisk       Money            `json:"atRisk"`
-	Settings     Settings         `json:"settings"`
+	Events              []CanonicalEvent `json:"events"`
+	ParentOrders        []ParentOrder    `json:"parentOrders"`
+	Orders              []Order          `json:"orders"`
+	Positions           []Position       `json:"positions"`
+	Settlements         []Settlement     `json:"settlements"`
+	Fills               []Fill           `json:"fills"`
+	Health              Health           `json:"health"`
+	Bankroll            Money            `json:"bankroll"`
+	AvailableToAllocate Money            `json:"availableToAllocate"`
+	AtRisk              Money            `json:"atRisk"`
+	Settings            Settings         `json:"settings"`
 }
 
 type AccountSnapshot struct {
-	ParentOrders []ParentOrder `json:"parentOrders"`
-	Orders       []Order       `json:"orders"`
-	Positions    []Position    `json:"positions"`
-	Settlements  []Settlement  `json:"settlements"`
-	Fills        []Fill        `json:"fills"`
-	Bankroll     Money         `json:"bankroll"`
-	AtRisk       Money         `json:"atRisk"`
+	ParentOrders        []ParentOrder `json:"parentOrders"`
+	Orders              []Order       `json:"orders"`
+	Positions           []Position    `json:"positions"`
+	Settlements         []Settlement  `json:"settlements"`
+	Fills               []Fill        `json:"fills"`
+	Bankroll            Money         `json:"bankroll"`
+	AvailableToAllocate Money         `json:"availableToAllocate"`
+	AtRisk              Money         `json:"atRisk"`
+}
+
+type AccountSummary struct {
+	Bankroll            Money `json:"bankroll"`
+	AvailableToAllocate Money `json:"availableToAllocate"`
+	AtRisk              Money `json:"atRisk"`
 }
 
 type StreamEvent struct {

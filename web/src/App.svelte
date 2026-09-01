@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { AccountSnapshot, BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
+  import type { AccountSnapshot, AccountSummary, BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
 
-  let snapshot: Snapshot = { events: [], parentOrders: [], orders: [], positions: [], settlements: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', latencyMs: 0, tradingEnabled: false }, bankroll: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
+  let snapshot: Snapshot = { events: [], parentOrders: [], orders: [], positions: [], settlements: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', accountState: 'pending', mappedMarkets: 0, latencyMs: 0, tradingEnabled: false }, bankroll: 0, availableToAllocate: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
   let view: 'schedule' | 'settings' = 'schedule'
   let draftSports: string[] = []
   let draftExcludeAddedGames = false
@@ -47,6 +47,7 @@
   const dateKey = (value: string) => new Date(value).toISOString().slice(0, 10)
   const time = (value: string) => new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
   const day = (value: string) => new Date(value).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
+  const updated = (value?: string) => value ? new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : 'Waiting'
   const spread = (line: string | undefined, away: boolean) => {
     const value = Number(line || 0) * (away ? -1 : 1)
     return value > 0 ? `+${value}` : `${value}`
@@ -86,7 +87,7 @@
   $: activeParents = snapshot.parentOrders.filter(parent => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((parent.status || '').toLowerCase()))
 
   function normalizeSnapshot(value: Snapshot): Snapshot {
-    return { ...value, events: value.events || [], parentOrders: value.parentOrders || [], orders: value.orders || [], positions: value.positions || [], settlements: value.settlements || [], fills: value.fills || [], settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
+    return { ...value, events: value.events || [], parentOrders: value.parentOrders || [], orders: value.orders || [], positions: value.positions || [], settlements: value.settlements || [], fills: value.fills || [], availableToAllocate: value.availableToAllocate ?? value.bankroll ?? 0, settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
   }
   function normalizeBook(value: OrderBook): OrderBook { return { ...value, yes: value.yes || [], no: value.no || [] } }
   function fillName(fill: Fill) { return fill.team || fill.market || fill.ticker }
@@ -221,8 +222,9 @@
     if (message.type === 'account_snapshot') {
       const account = message.data as AccountSnapshot
       ;(account.fills || []).forEach(fill => seenFillIDs.add(fill.id))
-      snapshot = { ...snapshot, parentOrders: account.parentOrders || [], orders: account.orders || [], positions: account.positions || [], settlements: account.settlements || [], fills: account.fills || [], bankroll: account.bankroll || 0, atRisk: account.atRisk || 0 }
+      snapshot = { ...snapshot, parentOrders: account.parentOrders || [], orders: account.orders || [], positions: account.positions || [], settlements: account.settlements || [], fills: account.fills || [], bankroll: account.bankroll || 0, availableToAllocate: account.availableToAllocate ?? account.bankroll ?? 0, atRisk: account.atRisk || 0 }
     }
+    if (message.type === 'account_summary') { const summary = message.data as AccountSummary; snapshot = { ...snapshot, bankroll: summary.bankroll, availableToAllocate: summary.availableToAllocate, atRisk: summary.atRisk } }
     if (message.type === 'schedule') snapshot = { ...snapshot, events: (message.data as Event[]) || [] }
     if (message.type === 'health') snapshot = { ...snapshot, health: message.data as Health }
     if (message.type === 'settings') { snapshot = { ...snapshot, settings: message.data as Settings }; draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames }
@@ -263,7 +265,7 @@
   {#if view === 'schedule'}
   <nav class="sports" aria-label="Sport filters">
     {#each sports as sport}<button class:active={selectedSport === sport} on:click={() => { selectedSport = sport; selectedLeague = 'ALL' }}>{sport}</button>{/each}
-    <span class="account">Bankroll <b>{money(snapshot.bankroll)}</b> · At risk <b>{money(snapshot.atRisk)}</b></span>
+    <span class="account">Available <b>{money(snapshot.bankroll)}</b> · New orders <b>{money(snapshot.availableToAllocate)}</b> · At risk <b>{money(snapshot.atRisk)}</b></span>
   </nav>
   <div class="filters">
     <select bind:value={selectedDate} aria-label="Date"><option value="ALL">All dates</option>{#each dates.slice(1) as date}<option value={date}>{new Date(`${date}T12:00:00`).toLocaleDateString()}</option>{/each}</select>
@@ -352,6 +354,19 @@
   {:else}
     <main class="settings-page">
       <header><h1>Settings</h1><p>Choose the sports PMBattle should load and subscribe to. Your choices are saved on this server.</p></header>
+      <section class="settings-section safety-section">
+        <div class="settings-heading"><div><h2>Trading safety</h2><p>Server-controlled status. Preferences on this page cannot unlock order entry.</p></div><span class="safety-badge" class:armed={snapshot.health.tradingEnabled}>{snapshot.health.tradingEnabled ? 'DEMO ARMED' : 'READ-ONLY'}</span></div>
+        <div class="safety-grid">
+          <span><small>Environment</small><b>{snapshot.health.mode.toUpperCase()}</b></span>
+          <span><small>Exchange feed</small><b>{snapshot.health.exchangeState.toUpperCase()}</b></span>
+          <span><small>Account sync</small><b>{(snapshot.health.accountState || 'pending').toUpperCase()}</b><i>{updated(snapshot.health.accountUpdated)}</i></span>
+          <span><small>Mapped markets</small><b>{(snapshot.health.mappedMarkets || 0).toLocaleString()}</b></span>
+          <span><small>Available to trade</small><b>{money(snapshot.bankroll)}</b></span>
+          <span><small>New-order capacity</small><b>{money(snapshot.availableToAllocate)}</b></span>
+          <span><small>Cash at risk</small><b>{money(snapshot.atRisk)}</b></span>
+        </div>
+        <p class="safety-note" class:armed={snapshot.health.tradingEnabled}>{snapshot.health.tradingEnabled ? 'Kalshi demo mutations are enabled. Production mutations remain blocked by the exchange adapter.' : snapshot.health.tradingLock || 'Order entry is locked.'}</p>
+      </section>
       <section class="settings-section">
         <div class="settings-heading"><div><h2>Sports</h2><p>Unchecked sports are removed from the schedule and Kalshi subscriptions.</p></div><div class="settings-actions"><button on:click={() => draftSports = snapshot.settings.availableSports.map(option => option.name)}>Select all</button><button on:click={() => draftSports = []}>Clear</button></div></div>
         <div class="sport-options">

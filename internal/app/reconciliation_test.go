@@ -74,9 +74,13 @@ func TestFillReconcilesAndPersistsParentBeforeBrowserEvent(t *testing.T) {
 	defer cancel()
 	fill := domain.Fill{ID: "fill-1", OrderID: "child-1", Exchange: "Kalshi", Ticker: "TEST", Quantity: 10 * domain.Dollar, CashRisk: 5 * domain.Dollar}
 	service.handleExchangeEvent(domain.StreamEvent{Type: "fill", Data: fill})
-	first, second := <-events, <-events
-	if first.Type != "parent_order" || second.Type != "fill" {
-		t.Fatalf("browser event order = %q then %q", first.Type, second.Type)
+	first, second, third := <-events, <-events, <-events
+	if first.Type != "parent_order" || second.Type != "account_summary" || third.Type != "fill" {
+		t.Fatalf("browser event order = %q, %q, %q", first.Type, second.Type, third.Type)
+	}
+	summary := second.Data.(domain.AccountSummary)
+	if summary.AtRisk != parent.ReservedRisk {
+		t.Fatalf("risk summary was not updated before fill alert: %+v", summary)
 	}
 	snapshot := service.Snapshot()
 	if len(snapshot.ParentOrders) != 1 || snapshot.ParentOrders[0].FilledRisk != fill.CashRisk || snapshot.ParentOrders[0].RemainingRisk != parent.CashRiskTarget-fill.CashRisk || snapshot.AtRisk != parent.ReservedRisk {
@@ -115,9 +119,13 @@ func TestAccountReconciliationEnrichesAndPersistsPositionsAndSettlements(t *test
 	if event.Type != "position" {
 		t.Fatalf("first published event = %q", event.Type)
 	}
+	healthEvent := <-events
+	if healthEvent.Type != "health" {
+		t.Fatalf("second published event = %q", healthEvent.Type)
+	}
 	accountEvent := <-events
 	if accountEvent.Type != "account_snapshot" {
-		t.Fatalf("second published event = %q", accountEvent.Type)
+		t.Fatalf("third published event = %q", accountEvent.Type)
 	}
 	snapshot := service.Snapshot()
 	if len(snapshot.Positions) != 1 || snapshot.Positions[0].EventID != "event-1" || snapshot.Positions[0].Rotation != "451" || snapshot.Positions[0].Market != "Spread 3.5" {
@@ -157,6 +165,45 @@ func TestCashAtRiskUsesAccountExposureWithoutDoubleCountingManagedParents(t *tes
 	}
 }
 
+func TestParentCreationReservesOneSharedAvailableBankroll(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "bankroll.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter := &appFakeAdapter{}
+	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, adapter)
+	quote, err := pricing.Quote(5000, 100*domain.Dollar, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quote.Ticker, quote.Side, quote.Outcome = "TEST", "yes", "Team A"
+	service.snapshot.Events = []domain.CanonicalEvent{{ID: "event-1", Participants: []domain.Participant{{Rotation: "451", Name: "Team A"}, {Rotation: "452", Name: "Team B"}}, Markets: []domain.MarketView{{Type: domain.MarketMoneyline, Away: &quote, Status: "open"}}}}
+	service.availableBooks["TEST"] = true
+	service.books.Snapshot(domain.OrderBook{Ticker: "TEST", Sequence: 1, Yes: []domain.BookLevel{{Price: 5000, Quantity: 100 * domain.Dollar}}})
+	service.snapshot.Bankroll = 50 * domain.Dollar
+	input := CreateParentOrderInput{EventID: "event-1", Ticker: "TEST", Side: "yes", Strategy: "basic", Policy: "post_only", CashRisk: 100 * domain.Dollar, PriceCapMoneyline: -200, LimitPrice: 5000}
+	if _, err := service.CreateParentOrder(context.Background(), input); !errors.Is(err, ErrInsufficientAvailableBalance) {
+		t.Fatalf("oversized bankroll request got %v", err)
+	}
+	if len(adapter.placed) != 0 {
+		t.Fatalf("insufficient request reached exchange: %+v", adapter.placed)
+	}
+	service.snapshot.Bankroll = 150 * domain.Dollar
+	if _, err := service.CreateParentOrder(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	service.mu.RLock()
+	remaining := service.availableParentCashLocked()
+	service.mu.RUnlock()
+	if remaining != 50*domain.Dollar {
+		t.Fatalf("shared bankroll remaining = %d, want %d", remaining, 50*domain.Dollar)
+	}
+	if snapshot := service.Snapshot(); snapshot.AvailableToAllocate != remaining {
+		t.Fatalf("browser snapshot capacity = %d, want %d", snapshot.AvailableToAllocate, remaining)
+	}
+}
+
 func TestIcebergRefreshPublishesParentAndChildBeforeFill(t *testing.T) {
 	store, err := storage.Open(filepath.Join(t.TempDir(), "iceberg.db"))
 	if err != nil {
@@ -165,6 +212,7 @@ func TestIcebergRefreshPublishesParentAndChildBeforeFill(t *testing.T) {
 	defer store.Close()
 	adapter := &appFakeAdapter{}
 	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, adapter)
+	service.snapshot.Bankroll = 1_000 * domain.Dollar
 	quote, err := pricing.Quote(5000, 100*domain.Dollar, false)
 	if err != nil {
 		t.Fatal(err)
@@ -181,12 +229,13 @@ func TestIcebergRefreshPublishesParentAndChildBeforeFill(t *testing.T) {
 	}
 	<-events
 	<-events
+	<-events
 	firstChild := parent.ChildOrderIDs[0]
 	fillQuote, _ := pricing.Quote(parent.LimitPrice, parent.SliceQuantity, false)
 	service.handleExchangeEvent(domain.StreamEvent{Type: "fill", Data: domain.Fill{ID: "fill-1", OrderID: firstChild, Ticker: parent.Ticker, Quantity: parent.SliceQuantity, CashRisk: fillQuote.AllInCost}})
-	first, second, third := <-events, <-events, <-events
-	if first.Type != "parent_order" || second.Type != "order" || third.Type != "fill" {
-		t.Fatalf("iceberg browser event order = %q, %q, %q", first.Type, second.Type, third.Type)
+	first, second, third, fourth := <-events, <-events, <-events, <-events
+	if first.Type != "parent_order" || second.Type != "order" || third.Type != "account_summary" || fourth.Type != "fill" {
+		t.Fatalf("iceberg browser event order = %q, %q, %q, %q", first.Type, second.Type, third.Type, fourth.Type)
 	}
 	snapshot := service.Snapshot()
 	if len(adapter.placed) != 2 || len(snapshot.ParentOrders) != 1 || len(snapshot.ParentOrders[0].Children) != 2 || len(snapshot.Orders) != 2 {
@@ -202,6 +251,7 @@ func TestFollowUsesServerBookAndRepricesBeforeBookPublication(t *testing.T) {
 	defer store.Close()
 	adapter := &appFakeAdapter{}
 	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, adapter)
+	service.snapshot.Bankroll = 1_000 * domain.Dollar
 	quote, err := pricing.Quote(5000, 100*domain.Dollar, false)
 	if err != nil {
 		t.Fatal(err)
@@ -221,10 +271,11 @@ func TestFollowUsesServerBookAndRepricesBeforeBookPublication(t *testing.T) {
 	}
 	<-events
 	<-events
+	<-events
 	service.handleExchangeEvent(domain.StreamEvent{Type: "orderbook", Data: domain.OrderBook{Ticker: "TEST", Sequence: 2, Yes: []domain.BookLevel{{Price: 5300, Quantity: 40 * domain.Dollar}}, No: []domain.BookLevel{{Price: 5500, Quantity: 40 * domain.Dollar}}}})
-	first, second, third := <-events, <-events, <-events
-	if first.Type != "parent_order" || second.Type != "order" || third.Type != "orderbook" {
-		t.Fatalf("follow browser event order = %q, %q, %q", first.Type, second.Type, third.Type)
+	first, second, third, fourth := <-events, <-events, <-events, <-events
+	if first.Type != "parent_order" || second.Type != "order" || third.Type != "account_summary" || fourth.Type != "orderbook" {
+		t.Fatalf("follow browser event order = %q, %q, %q, %q", first.Type, second.Type, third.Type, fourth.Type)
 	}
 	snapshot := service.Snapshot()
 	if len(adapter.amended) != 1 || adapter.amended[0].LimitPrice != 5300 || snapshot.ParentOrders[0].ReplaceCount != 1 || snapshot.ParentOrders[0].FilledRisk+snapshot.ParentOrders[0].ReservedRisk > snapshot.ParentOrders[0].CashRiskTarget {
