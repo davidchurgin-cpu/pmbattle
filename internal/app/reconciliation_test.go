@@ -417,6 +417,21 @@ func TestAmendReconciledOrderUsesRemainingQuantityAndUpdatesImmediately(t *testi
 	}
 }
 
+func TestCancelAllOrdersIncludesReconciledExchangeOrders(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "cancel-all-orders.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter := &appFakeAdapter{}
+	service := New(Config{TradingEnabled: true, ExchangeEnvironment: "production"}, store, adapter)
+	service.snapshot.Orders = []domain.Order{{ID: "external-1", Status: "resting"}, {ID: "external-2", Status: "resting"}}
+	result, err := service.CancelAllOrders(context.Background())
+	if err != nil || result.Matched != 2 || len(result.Canceled) != 2 || len(adapter.canceled) != 2 {
+		t.Fatalf("all-order cancellation missed reconciled orders: result=%+v canceled=%v err=%v", result, adapter.canceled, err)
+	}
+}
+
 func TestResumeFollowRefusesStaleBookBeforeEngineStateChanges(t *testing.T) {
 	store, err := storage.Open(filepath.Join(t.TempDir(), "resume-stale.db"))
 	if err != nil {

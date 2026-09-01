@@ -213,6 +213,12 @@ type CancelScopeResult struct {
 	Failures []CancelFailure      `json:"failures"`
 }
 
+type CancelAllResult struct {
+	Matched  int             `json:"matched"`
+	Canceled []domain.Order  `json:"canceled"`
+	Failures []CancelFailure `json:"failures"`
+}
+
 type AuditPage struct {
 	Records    []domain.AuditRecord `json:"records"`
 	NextBefore int64                `json:"nextBefore,omitempty"`
@@ -573,6 +579,35 @@ func (s *Service) AmendOrder(ctx context.Context, id string, remainingQuantity, 
 	s.broadcast(domain.StreamEvent{Type: "order", Data: amended})
 	s.broadcastAccountSummary()
 	return amended, nil
+}
+
+// CancelAllOrders covers the actual exchange account, including orders that
+// were created outside PMBattle or recovered after a restart.
+func (s *Service) CancelAllOrders(ctx context.Context) (CancelAllResult, error) {
+	if !s.Snapshot().Health.TradingEnabled {
+		return CancelAllResult{}, orderengine.ErrDisabled
+	}
+	targets := make([]domain.Order, 0)
+	for _, order := range s.Snapshot().Orders {
+		if !parentOrderTerminal(order.Status) {
+			targets = append(targets, order)
+		}
+	}
+	result := CancelAllResult{Matched: len(targets), Canceled: []domain.Order{}, Failures: []CancelFailure{}}
+	_ = s.store.Audit(ctx, "all_orders_cancel_requested", map[string]any{"matched": len(targets)})
+	for _, target := range targets {
+		order, err := s.CancelOrder(ctx, target.ID)
+		if errors.Is(err, ErrOrderNotFound) {
+			continue // Another child from the same managed parent canceled it.
+		}
+		if err != nil {
+			result.Failures = append(result.Failures, CancelFailure{ParentID: target.ID, Error: err.Error()})
+			continue
+		}
+		result.Canceled = append(result.Canceled, order)
+	}
+	_ = s.store.Audit(ctx, "all_orders_cancel_result", result)
+	return result, nil
 }
 
 func (s *Service) ResumeParentOrder(ctx context.Context, id string) (domain.ParentOrder, error) {

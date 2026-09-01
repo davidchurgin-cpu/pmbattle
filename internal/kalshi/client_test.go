@@ -109,6 +109,27 @@ func TestPlaceOrderAcceptsFlatV2Acknowledgement(t *testing.T) {
 	}
 }
 
+func TestPlaceOrderRecoversAmbiguousAcknowledgementByClientID(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"orders":[{"order_id":"recovered-order","client_order_id":"client-recover","ticker":"TEST","status":"resting","side":"yes","yes_price_dollars":"0.4300","initial_count_fp":"4.00","remaining_count_fp":"4.00"}]}`))
+	}))
+	defer server.Close()
+	client := &Client{cfg: Config{Environment: "production", KeyID: "key-id", TradingEnabled: true}, baseURL: server.URL, key: key, http: server.Client()}
+	order, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{Ticker: "TEST", OutcomeSide: "yes", Quantity: 4 * domain.Dollar, LimitPrice: 4300, TimeInForce: "good_till_canceled", ClientOrderID: "client-recover"})
+	if err != nil || order.ID != "recovered-order" {
+		t.Fatalf("ambiguous acknowledgement was not recovered: order=%+v err=%v", order, err)
+	}
+}
+
 func TestAmendNoOrderUsesV2TotalCountAndYesBookAsk(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {

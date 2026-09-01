@@ -32,6 +32,7 @@
   let slipPolicy: 'limit' | 'post_only' | 'ioc' = 'limit'
   let slipSlice = '25'
   let slipStatus = ''
+  let submittingOrder = false
   let cancelingParentID = ''
   let cancelingOrderID = ''
   let editingOrderID = ''
@@ -300,15 +301,17 @@
   }
   function setBookSide(side: 'yes' | 'no') { bookSide = side; slipOpen = false }
   async function submitOrder() {
-	if (!snapshot.health.tradingEnabled) { slipStatus = 'Order entry is locked on this server.'; return }
+	if (!snapshot.health.tradingEnabled || submittingOrder) { slipStatus = submittingOrder ? 'Checking Kalshi—do not resubmit.' : 'Order entry is locked on this server.'; return }
 	if (snapshot.health.mode === 'live' && !confirm(`Place a REAL Kalshi order for ${activeOutcome} with ${money(Math.round((Number(slipRisk) || 0) * 10000))} cash at risk?`)) return
-    slipStatus = 'Submitting…'
+    submittingOrder = true
+    slipStatus = 'Checking Kalshi—do not resubmit.'
     try {
       const response = await api('/api/parent-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId: selectedEvent?.id, rotation: selectedEvent?.participants.find(participant => participant.name === selectedQuote?.outcome)?.rotation || '', ticker: selectedQuote?.ticker, outcome: activeOutcome, market: marketLabel(selectedMarket), side: bookSide, strategy: slipStrategy, policy: slipPolicy, cashRisk: Math.round((Number(slipRisk) || 0) * 10000), priceCapMoneyline: Number(slipCap), limitPrice: slipPrice, sliceQuantity: Math.round((Number(slipSlice) || 0) * 10000) }) })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Order was rejected')
       slipStatus = `Parent order ${payload.id} created`
     } catch (cause) { slipStatus = cause instanceof Error ? cause.message : 'Unable to submit order' }
+    finally { submittingOrder = false }
   }
   function parentForOrder(order: Order) {
     return snapshot.parentOrders.find(parent => parent.childOrderIds.includes(order.id))
@@ -395,6 +398,16 @@
     cancelingGroup = true
     cancelGroupStatus = 'Canceling…'
     try {
+      if (scope === 'all') {
+        if (snapshot.health.mode === 'live' && !confirm(`Cancel all ${workingOrders.length} REAL active Kalshi orders?`)) { cancelingGroup = false; cancelGroupStatus = ''; return }
+        const response = await api('/api/orders', { method: 'DELETE' })
+        const payload = await response.json()
+        if (!response.ok && response.status !== 207) throw new Error(payload.error || 'Unable to cancel all active orders')
+        const canceledIDs = new Set((payload.canceled || []).map((order: Order) => order.id))
+        snapshot = { ...snapshot, orders: snapshot.orders.map(order => canceledIDs.has(order.id) ? { ...order, status: 'canceled', cashRisk: 0 } : order) }
+        cancelGroupStatus = payload.failures?.length ? `${payload.canceled.length} canceled · ${payload.failures.length} failed` : `${payload.matched} active order${payload.matched === 1 ? '' : 's'} canceled`
+        return
+      }
       const response = await api('/api/parent-orders/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope, value }) })
       const payload = await response.json()
       if (!response.ok && response.status !== 207) throw new Error(payload.error || 'Unable to cancel managed orders')
@@ -532,7 +545,7 @@
         <div class="table-head"><span>Game / bet</span><span>Exchange</span><span class="num">Quantity</span><span class="num">Raw</span><span class="num">All-in</span><span class="num">Fee</span><span class="num">Cash risk</span></div>
         {#each snapshot.fills as fill}<div class="table-row" title={fill.ticker}><span><b>{rowGame(fill)}</b><small>{fillName(fill)} · {ago(fill.createdAt)}</small></span><span>{fill.exchange}</span><span class="num">{qty(fill.quantity)}</span><span class="num">{money(fill.rawPrice)}</span><span class="num">{ml(fill.allInMoneyline)}</span><span class="num">{money(fill.fee)}</span><span class="num">{money(fill.cashRisk)}</span></div>{:else}<div class="empty">No fills yet</div>{/each}
       {:else if trayTab === 'orders'}
-        {#if snapshot.health.tradingEnabled}<div class="cancel-scope-bar"><b>{snapshot.health.mode === 'live' ? 'Real-order kill switch' : 'Demo kill switch'}</b><select bind:value={cancelGroupScope} aria-label="Cancel scope"><option value="all">All managed orders</option><option value="event" disabled={!selectedEvent}>Current game</option><option value="strategy:basic">Basic orders</option><option value="strategy:iceberg">Iceberg orders</option><option value="strategy:follow">Follow orders</option><option value="exchange:Kalshi">Kalshi managed orders</option></select><button disabled={cancelingGroup || activeParents.length === 0} on:click={cancelGroup}>{cancelingGroup ? 'Canceling…' : 'Cancel scope'}</button><small aria-live="polite">{cancelGroupStatus}</small></div>{/if}
+        {#if snapshot.health.tradingEnabled}<div class="cancel-scope-bar"><b>{snapshot.health.mode === 'live' ? 'Real-order kill switch' : 'Demo kill switch'}</b><select bind:value={cancelGroupScope} aria-label="Cancel scope"><option value="all">All active Kalshi orders</option><option value="event" disabled={!selectedEvent}>Current game</option><option value="strategy:basic">Basic orders</option><option value="strategy:iceberg">Iceberg orders</option><option value="strategy:follow">Follow orders</option><option value="exchange:Kalshi">Kalshi managed orders</option></select><button disabled={cancelingGroup || (cancelGroupScope === 'all' ? workingOrders.length === 0 : activeParents.length === 0)} on:click={cancelGroup}>{cancelingGroup ? 'Canceling…' : 'Cancel scope'}</button><small aria-live="polite">{cancelGroupStatus}</small></div>{/if}
         <div class="table-head"><span>Game / bet</span><span>Exchange</span><span class="num">Quantity</span><span class="num">Limit</span><span>Status</span><span></span><span class="num">Cash risk</span></div>
 		{#each snapshot.orders as order}<div class="table-row compact linked-row" role="button" tabindex="0" title={`Open ${rowGame(order)} · ${rowDetail(order)}`} aria-label={`Open market for ${rowGame(order)} ${rowDetail(order)}`} on:click={() => openAccountMarket(order)} on:keydown={(event) => openAccountMarketKey(event, order)}><span><b>{rowGame(order)}</b><small>{rowDetail(order)}</small></span><span>{order.exchange}</span><span class="num">{#if editingOrderID === order.id}<input class="inline-order-input" aria-label="Remaining contracts" type="number" min="0.01" step="0.01" bind:value={editQuantity} on:click|stopPropagation />{:else}{qty(order.quantity - order.filledQuantity)}<small>remaining</small>{/if}</span><span class="num">{#if editingOrderID === order.id}<input class="inline-order-input" aria-label="Limit cents" type="number" min="0.01" max="99.99" step="0.01" bind:value={editLimit} on:click|stopPropagation />{:else}{order.limitPrice / 100}¢<small>{ml(rawML(order.limitPrice))}</small>{/if}</span><span><i class="pill {orderStatus(order).tone}">{orderStatus(order).label}</i>{#if orderNote(order)}<small>{orderNote(order)}</small>{/if}</span><span>{#if editingOrderID === order.id}<button class="resume-order" disabled={Boolean(savingOrderID)} on:click|stopPropagation={() => saveOrder(order)}>{savingOrderID ? 'Saving…' : 'Save'}</button><button class="cancel-order" on:click|stopPropagation={stopEditOrder}>Close</button>{:else if snapshot.health.tradingEnabled && workingOrders.includes(order)}<button class="resume-order" disabled={Boolean(editingOrderID)} on:click|stopPropagation={() => beginEditOrder(order)}>Edit</button>{/if}</span><span class="order-risk num">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click|stopPropagation={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? 'Resuming…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingOrderID)} on:click|stopPropagation={() => cancelOrder(order)}>{cancelingOrderID === order.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
       {:else if trayTab === 'positions'}
@@ -621,7 +634,7 @@
       <div class="slip-summary"><span>Estimated contracts <b>{qty(slipQuantity)}</b></span><span>Fee-adjusted cap <b>{ml(Number(slipCap))}</b></span></div>
       {#if slipOverCap}<p class="slip-status" role="alert">Cash at risk is above this server's per-order cap of {money(snapshot.health.maxCashRisk || 0)}.</p>{/if}
       {#if slipStrategy === 'follow'}<p class="slip-status">Joins the live top bid, stays post-only, and pauses at your all-in cap or on stale data.</p>{/if}
-	  <button class="submit-order" disabled={!snapshot.health.tradingEnabled || !slipPrice || Number(slipRisk) <= 0 || slipOverCap} on:click={submitOrder}>{snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'Review & place real order' : 'Place demo order' : 'Trading locked'}</button>
+	  <button class="submit-order" disabled={submittingOrder || !snapshot.health.tradingEnabled || !slipPrice || Number(slipRisk) <= 0 || slipOverCap} on:click={submitOrder}>{submittingOrder ? 'Checking Kalshi…' : snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'Review & place real order' : 'Place demo order' : 'Trading locked'}</button>
       {#if slipStatus}<p class="slip-status" aria-live="polite">{slipStatus}</p>{/if}
     </aside>
   {/if}

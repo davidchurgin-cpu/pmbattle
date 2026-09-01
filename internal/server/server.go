@@ -41,6 +41,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/parent-orders", s.createParentOrder)
 	mux.HandleFunc("DELETE /api/orders/{id}", s.cancelOrder)
 	mux.HandleFunc("PATCH /api/orders/{id}", s.amendOrder)
+	mux.HandleFunc("DELETE /api/orders", s.cancelAllOrders)
 	mux.HandleFunc("POST /api/parent-orders/cancel", s.cancelParentOrders)
 	mux.HandleFunc("POST /api/parent-orders/{id}/resume", s.resumeParentOrder)
 	mux.HandleFunc("DELETE /api/parent-orders/{id}", s.cancelParentOrder)
@@ -91,6 +92,22 @@ func (s *Server) amendOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, order)
+}
+func (s *Server) cancelAllOrders(w http.ResponseWriter, r *http.Request) {
+	result, err := s.service.CancelAllOrders(r.Context())
+	if err != nil {
+		status := http.StatusBadGateway
+		if errors.Is(err, orderengine.ErrDisabled) {
+			status = http.StatusForbidden
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	status := http.StatusOK
+	if len(result.Failures) > 0 {
+		status = http.StatusMultiStatus
+	}
+	writeJSON(w, status, result)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {

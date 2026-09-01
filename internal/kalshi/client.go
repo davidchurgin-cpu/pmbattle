@@ -447,6 +447,11 @@ func (c *Client) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequ
 		TimestampMS   int64    `json:"ts_ms"`
 	}
 	if err := c.doJSON(ctx, http.MethodPost, "/portfolio/events/orders", payload, &response, http.StatusCreated, http.StatusOK); err != nil {
+		if recovered, ok := c.orderByClientID(ctx, request.ClientOrderID); ok {
+			recovered.Side = request.OutcomeSide
+			recovered.LimitPrice = request.LimitPrice
+			return recovered, nil
+		}
 		return domain.Order{}, err
 	}
 	// V2 returns acknowledgement fields at the top level. Keep accepting the
@@ -461,7 +466,12 @@ func (c *Client) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequ
 	}
 	order := normalizeOrder(raw)
 	if order.ID == "" {
-		return domain.Order{}, errors.New("kalshi create order response did not include an order id")
+		if recovered, ok := c.orderByClientID(ctx, request.ClientOrderID); ok {
+			recovered.Side = request.OutcomeSide
+			recovered.LimitPrice = request.LimitPrice
+			return recovered, nil
+		}
+		return domain.Order{}, errors.New("kalshi create order acknowledgement was ambiguous and reconciliation found no matching client order id")
 	}
 	order.Side = request.OutcomeSide
 	order.LimitPrice = request.LimitPrice
@@ -474,6 +484,25 @@ func (c *Client) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequ
 		}
 	}
 	return order, nil
+}
+
+func (c *Client) orderByClientID(ctx context.Context, clientOrderID string) (domain.Order, bool) {
+	clientOrderID = strings.TrimSpace(clientOrderID)
+	if clientOrderID == "" || ctx.Err() != nil {
+		return domain.Order{}, false
+	}
+	var payload struct {
+		Orders []rawOrder `json:"orders"`
+	}
+	if err := c.getJSON(ctx, "/portfolio/orders?limit=1000", &payload); err != nil {
+		return domain.Order{}, false
+	}
+	for _, raw := range payload.Orders {
+		if raw.ClientOrderID == clientOrderID {
+			return normalizeOrder(raw), true
+		}
+	}
+	return domain.Order{}, false
 }
 
 func (c *Client) AmendOrder(ctx context.Context, request exchange.AmendOrderRequest) (domain.Order, error) {
@@ -619,18 +648,19 @@ func tradingEnvironment(environment string) bool {
 }
 
 type rawOrder struct {
-	ID        string    `json:"order_id"`
-	Ticker    string    `json:"ticker"`
-	Status    string    `json:"status"`
-	Side      string    `json:"side"`
-	Action    string    `json:"action"`
-	YesPrice  string    `json:"yes_price_dollars"`
-	NoPrice   string    `json:"no_price_dollars"`
-	Filled    string    `json:"fill_count_fp"`
-	Remaining string    `json:"remaining_count_fp"`
-	Initial   string    `json:"initial_count_fp"`
-	Created   time.Time `json:"created_time"`
-	CreatedMS int64     `json:"created_ts_ms"`
+	ID            string    `json:"order_id"`
+	ClientOrderID string    `json:"client_order_id"`
+	Ticker        string    `json:"ticker"`
+	Status        string    `json:"status"`
+	Side          string    `json:"side"`
+	Action        string    `json:"action"`
+	YesPrice      string    `json:"yes_price_dollars"`
+	NoPrice       string    `json:"no_price_dollars"`
+	Filled        string    `json:"fill_count_fp"`
+	Remaining     string    `json:"remaining_count_fp"`
+	Initial       string    `json:"initial_count_fp"`
+	Created       time.Time `json:"created_time"`
+	CreatedMS     int64     `json:"created_ts_ms"`
 }
 
 type rawFill struct {
