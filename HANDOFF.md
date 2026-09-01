@@ -120,6 +120,16 @@ Open `http://127.0.0.1:8080/`. Use `PMBATTLE_TRADING_ENABLED=false` for read-onl
 - Extra/added games are identified by an exactly six-digit numeric schedule event ID. The Settings tab can exclude them before market matching and subscription.
 - Simulated events include selectable moneyline, spread, and total quotes. Six-digit added games use lower simulated available quantities.
 
+## Kalshi API verification status (September 1, 2026)
+
+Kalshi's own documentation sites were unreachable from the remote coding environment, so the checks below used web search summaries and a third-party SDK's documentation (TexasCoding/kalshi-python-sdk). Treat "consistent" as "no contradiction found", not proof. The first live order must confirm each line.
+
+- **Fee rates.** Taker `0.07 × C × P × (1−P)` and maker `0.0175 × C × P × (1−P)` match `internal/pricing`. Consistent.
+- **Fee rounding.** Public summaries say "rounded up" and Kalshi's maker rebate policy implies rounding to the cent per trade; the code rounds up to $0.0001. If Kalshi rounds each fill to the next cent, a real fill can cost up to $0.0099 more than the reservation. Compare `fee_cost` on the first live fill with the app's fee column and adjust `pricing.KalshiFee` if they differ.
+- **Create order V2.** Path `/portfolio/events/orders`, `side` is `bid`/`ask` on the YES book, `count` and `price` are fixed-point strings, `client_order_id` required, `time_in_force` values match, `self_trade_prevention_type` accepts `taker_at_cross`. Consistent. `post_only` and `cancel_order_on_pause` were not listed in the SDK documentation; whether the V2 endpoint honors `post_only` is unverified. Until a live test proves a post-only order is rejected rather than filled when it would cross, do not run follow orders live.
+- **Amend order V2.** Path `/portfolio/events/orders/{id}/amend`; `count` is the total/max-fillable count (filled plus desired remaining), which matches the engine. The SDK documents the response as `{old_order, order}` where `order` may carry a **new order_id**. The client now decodes both the flat and nested shapes, and the follow engine adopts a replacement ID for later fills, cancels, and risk checks while keeping the old ID listed for late fills (`TestFollowTracksReplacementOrderIDAfterAmend`). `updated_client_order_id` was not in the SDK docs; if the exchange rejects unknown fields, the amend will fail closed and the parent pauses.
+- **NO orders.** Buying NO at price p is sent as an ask on the YES book at 1−p. Standard for a single binary book. Consistent, unproven live.
+
 ## Known limitations
 
 - Kalshi live order authentication and on-demand book streaming have been validated read-only against a production account. The September 1, 2026 refresh mapped 2,244 of 4,760 discovered contracts into 514 selectable game/strike books; a requested Clemson order book synchronized with full depth and the production order button remained disabled.

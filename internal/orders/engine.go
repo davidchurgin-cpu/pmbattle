@@ -371,6 +371,15 @@ func (e *Engine) handleFollowParent(ctx context.Context, parentID string, book d
 			parent.Children[childIndex].Status = "resting"
 		}
 		parent.Children[childIndex].UpdatedAt = e.now()
+		// An exchange may answer an amend with a replacement order that has a
+		// new ID. Track it so later fills, cancels, and risk checks follow the
+		// live order; the old ID stays listed so late fills still match.
+		if replacement := strings.TrimSpace(amended.ID); replacement != "" && replacement != child.ID {
+			parent.Children[childIndex].ID = replacement
+			if !contains(parent.ChildOrderIDs, replacement) {
+				parent.ChildOrderIDs = append(parent.ChildOrderIDs, replacement)
+			}
+		}
 	}
 	actualRemaining := request.Quantity - parent.Children[childIndex].FilledQuantity
 	if actualRemaining < 0 {
@@ -391,7 +400,7 @@ func (e *Engine) handleFollowParent(ctx context.Context, parentID string, book d
 	parent.UpdatedAt = parent.LastRepricedAt
 	e.parents[parentID] = parent
 	e.mu.Unlock()
-	amended.ID = child.ID
+	amended.ID = parent.Children[childIndex].ID
 	amended.Exchange = parent.Exchange
 	amended.Ticker = parent.Ticker
 	amended.Rotation = parent.Rotation

@@ -466,15 +466,32 @@ func (c *Client) AmendOrder(ctx context.Context, request exchange.AmendOrderRequ
 		Ticker: request.Ticker, Side: bookSide, Price: fixed.Format(price), Count: fixed.Format(request.Quantity),
 		ClientOrderID: request.ClientOrderID, UpdatedClientOrderID: request.UpdatedClientOrderID, ExchangeIndex: -1,
 	}
+	// Kalshi has documented two response shapes for amend: a flat
+	// acknowledgement and a nested {old_order, order} pair where the new order
+	// may carry a different order_id. Both are decoded; the nested order wins.
 	var response struct {
-		OrderID       string `json:"order_id"`
-		ClientOrderID string `json:"client_order_id"`
-		Remaining     string `json:"remaining_count"`
-		TimestampMS   int64  `json:"ts_ms"`
+		OrderID       string   `json:"order_id"`
+		ClientOrderID string   `json:"client_order_id"`
+		Remaining     string   `json:"remaining_count"`
+		Filled        string   `json:"fill_count"`
+		TimestampMS   int64    `json:"ts_ms"`
+		Order         rawOrder `json:"order"`
 	}
 	path := "/portfolio/events/orders/" + url.PathEscape(request.OrderID) + "/amend"
 	if err := c.doJSON(ctx, http.MethodPost, path, payload, &response, http.StatusOK); err != nil {
 		return domain.Order{}, err
+	}
+	if response.Order.ID != "" {
+		order := normalizeOrder(response.Order)
+		order.Side = request.OutcomeSide
+		order.LimitPrice = request.LimitPrice
+		if order.Quantity == 0 {
+			order.Quantity = request.Quantity
+		}
+		if order.Status == "" {
+			order.Status = "resting"
+		}
+		return order, nil
 	}
 	orderID := response.OrderID
 	if orderID == "" {
@@ -482,6 +499,7 @@ func (c *Client) AmendOrder(ctx context.Context, request exchange.AmendOrderRequ
 	}
 	status := "resting"
 	remaining, _ := fixed.Parse(response.Remaining)
+	filled, _ := fixed.Parse(response.Filled)
 	if remaining == 0 && response.Remaining != "" {
 		status = "filled"
 	}
@@ -491,7 +509,7 @@ func (c *Client) AmendOrder(ctx context.Context, request exchange.AmendOrderRequ
 	}
 	return domain.Order{
 		ID: orderID, Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide,
-		Status: status, Quantity: request.Quantity, LimitPrice: request.LimitPrice, CreatedAt: created,
+		Status: status, Quantity: request.Quantity, FilledQuantity: filled, LimitPrice: request.LimitPrice, CreatedAt: created,
 	}, nil
 }
 

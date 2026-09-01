@@ -240,3 +240,22 @@ func TestSettlementsPaginatesAndCalculatesFixedPointNet(t *testing.T) {
 		t.Fatalf("unexpected settlements %+v", settlements)
 	}
 }
+
+func TestAmendDecodesNestedOrderResponseWithReplacementID(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"old_order":{"order_id":"order-1","status":"canceled"},"order":{"order_id":"order-2","ticker":"TEST","status":"resting","side":"yes","yes_price_dollars":"0.5100","fill_count_fp":"2.0000","remaining_count_fp":"8.0000","initial_count_fp":"10.0000"}}`))
+	}))
+	defer server.Close()
+	client := &Client{cfg: Config{Environment: "demo", KeyID: "key-id", TradingEnabled: true}, baseURL: server.URL, key: key, http: server.Client()}
+	order, err := client.AmendOrder(context.Background(), exchange.AmendOrderRequest{OrderID: "order-1", Ticker: "TEST", OutcomeSide: "yes", Quantity: 10 * domain.Dollar, LimitPrice: 5100, ClientOrderID: "client-1", UpdatedClientOrderID: "client-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.ID != "order-2" || order.Status != "resting" || order.FilledQuantity != 2*domain.Dollar || order.Quantity != 10*domain.Dollar || order.LimitPrice != 5100 || order.Side != "yes" {
+		t.Fatalf("nested amend response decoded wrongly: %+v", order)
+	}
+}

@@ -18,6 +18,9 @@ type fakeExecutor struct {
 	canceled  []string
 	failPlace int
 	failAmend bool
+	// amendNewID makes every amend acknowledgement carry a replacement order id,
+	// mirroring an exchange that re-books an amended order.
+	amendNewID string
 }
 
 func (f *fakeExecutor) PlaceOrder(_ context.Context, request exchange.PlaceOrderRequest) (domain.Order, error) {
@@ -33,7 +36,11 @@ func (f *fakeExecutor) AmendOrder(_ context.Context, request exchange.AmendOrder
 	if f.failAmend {
 		return domain.Order{}, errors.New("amend unavailable")
 	}
-	return domain.Order{ID: request.OrderID, Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide, Status: "resting", Quantity: request.Quantity, LimitPrice: request.LimitPrice}, nil
+	id := request.OrderID
+	if f.amendNewID != "" {
+		id = f.amendNewID
+	}
+	return domain.Order{ID: id, Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide, Status: "resting", Quantity: request.Quantity, LimitPrice: request.LimitPrice}, nil
 }
 func (f *fakeExecutor) CancelOrder(_ context.Context, id string) error {
 	f.canceled = append(f.canceled, id)
@@ -408,5 +415,35 @@ func TestPerOrderCashRiskCapIsEnforcedAndClamped(t *testing.T) {
 	engine.SetMaxCashRisk(0)
 	if engine.MaxCashRisk() != DefaultMaxCashRisk {
 		t.Fatalf("zero cap was not clamped to default: %d", engine.MaxCashRisk())
+	}
+}
+
+func TestFollowTracksReplacementOrderIDAfterAmend(t *testing.T) {
+	executor := &fakeExecutor{amendNewID: "order-replacement"}
+	engine := New(true, executor)
+	request := validRequest()
+	request.Strategy = "follow"
+	request.PriceCapMoneyline = -200
+	parent, child, err := engine.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	book := domain.OrderBook{Ticker: parent.Ticker, Yes: []domain.BookLevel{{Price: 5100, Quantity: 50 * domain.Dollar}}}
+	results := engine.HandleBook(context.Background(), book)
+	if len(results) != 1 || results[0].Err != nil || results[0].Order == nil {
+		t.Fatalf("follow did not reprice: %+v", results)
+	}
+	updated := results[0].Parent
+	if results[0].Order.ID != "order-replacement" || updated.Children[0].ID != "order-replacement" || !contains(updated.ChildOrderIDs, "order-replacement") || !contains(updated.ChildOrderIDs, child.ID) {
+		t.Fatalf("replacement id not tracked: order=%+v parent=%+v", results[0].Order, updated)
+	}
+	if _, matched := engine.ParentForChild("order-replacement"); !matched {
+		t.Fatal("fills on the replacement order would not match the parent")
+	}
+	if _, err := engine.Cancel(context.Background(), parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.canceled) != 1 || executor.canceled[0] != "order-replacement" {
+		t.Fatalf("cancel targeted %v, want the replacement order", executor.canceled)
 	}
 }
