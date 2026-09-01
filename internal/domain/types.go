@@ -179,15 +179,40 @@ type ChildOrderState struct {
 }
 
 type Position struct {
-	Exchange      string `json:"exchange"`
-	Ticker        string `json:"ticker"`
-	Rotation      string `json:"rotation,omitempty"`
-	Market        string `json:"market"`
-	Quantity      Money  `json:"quantity"`
-	CashRisk      Money  `json:"cashRisk"`
-	AveragePrice  Money  `json:"averagePrice"`
-	CurrentPrice  Money  `json:"currentPrice"`
-	UnrealizedPnL Money  `json:"unrealizedPnl"`
+	Exchange      string    `json:"exchange"`
+	Ticker        string    `json:"ticker"`
+	EventID       string    `json:"eventId,omitempty"`
+	Rotation      string    `json:"rotation,omitempty"`
+	Market        string    `json:"market"`
+	Side          string    `json:"side,omitempty"`
+	Quantity      Money     `json:"quantity"`
+	CashRisk      Money     `json:"cashRisk"`
+	TotalTraded   Money     `json:"totalTraded,omitempty"`
+	AveragePrice  Money     `json:"averagePrice"`
+	CurrentPrice  Money     `json:"currentPrice"`
+	RealizedPnL   Money     `json:"realizedPnl,omitempty"`
+	UnrealizedPnL Money     `json:"unrealizedPnl"`
+	FeesPaid      Money     `json:"feesPaid,omitempty"`
+	UpdatedAt     time.Time `json:"updatedAt,omitempty"`
+}
+
+type Settlement struct {
+	Exchange        string    `json:"exchange"`
+	Ticker          string    `json:"ticker"`
+	EventTicker     string    `json:"eventTicker,omitempty"`
+	EventID         string    `json:"eventId,omitempty"`
+	Rotation        string    `json:"rotation,omitempty"`
+	Market          string    `json:"market,omitempty"`
+	Result          string    `json:"result"`
+	YesQuantity     Money     `json:"yesQuantity"`
+	NoQuantity      Money     `json:"noQuantity"`
+	YesTotalCost    Money     `json:"yesTotalCost"`
+	NoTotalCost     Money     `json:"noTotalCost"`
+	Revenue         Money     `json:"revenue"`
+	Fee             Money     `json:"fee"`
+	NetPnL          Money     `json:"netPnl"`
+	SettlementValue Money     `json:"settlementValue"`
+	SettledAt       time.Time `json:"settledAt"`
 }
 
 type Health struct {
@@ -223,6 +248,7 @@ type Snapshot struct {
 	ParentOrders []ParentOrder    `json:"parentOrders"`
 	Orders       []Order          `json:"orders"`
 	Positions    []Position       `json:"positions"`
+	Settlements  []Settlement     `json:"settlements"`
 	Fills        []Fill           `json:"fills"`
 	Health       Health           `json:"health"`
 	Bankroll     Money            `json:"bankroll"`
@@ -234,6 +260,7 @@ type AccountSnapshot struct {
 	ParentOrders []ParentOrder `json:"parentOrders"`
 	Orders       []Order       `json:"orders"`
 	Positions    []Position    `json:"positions"`
+	Settlements  []Settlement  `json:"settlements"`
 	Fills        []Fill        `json:"fills"`
 	Bankroll     Money         `json:"bankroll"`
 	AtRisk       Money         `json:"atRisk"`

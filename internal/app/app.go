@@ -73,6 +73,13 @@ func (s *Service) Run(ctx context.Context) {
 		s.recalculateParentRiskLocked()
 		s.mu.Unlock()
 	}
+	if settlements, err := s.store.LoadSettlements(ctx, 500); err != nil {
+		slog.Error("load settlement history", "error", err)
+	} else {
+		s.mu.Lock()
+		s.snapshot.Settlements = settlements
+		s.mu.Unlock()
+	}
 	if cached, err := s.store.LoadEvents(ctx); err == nil && len(cached) > 0 {
 		s.setEvents(cached, false)
 	}
@@ -706,6 +713,9 @@ func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
 			}
 		}
 		s.mu.Lock()
+		for i := range positions {
+			s.enrichPositionLocked(&positions[i])
+		}
 		s.snapshot.Orders = orders
 		s.snapshot.Positions = positions
 		for _, parent := range reconciledParents {
@@ -733,9 +743,102 @@ func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
 			s.applyFill(fill, publish)
 		}
 	}
+	s.reconcileSettlements(ctx)
 	s.reconcileParentFills(ctx, publish)
 	snapshot := s.Snapshot()
-	s.broadcast(domain.StreamEvent{Type: "account_snapshot", Data: domain.AccountSnapshot{ParentOrders: snapshot.ParentOrders, Orders: snapshot.Orders, Positions: snapshot.Positions, Fills: snapshot.Fills, Bankroll: snapshot.Bankroll, AtRisk: snapshot.AtRisk}})
+	s.broadcast(domain.StreamEvent{Type: "account_snapshot", Data: domain.AccountSnapshot{ParentOrders: snapshot.ParentOrders, Orders: snapshot.Orders, Positions: snapshot.Positions, Settlements: snapshot.Settlements, Fills: snapshot.Fills, Bankroll: snapshot.Bankroll, AtRisk: snapshot.AtRisk}})
+}
+
+func (s *Service) reconcileSettlements(ctx context.Context) {
+	since, err := s.store.LatestSettlementTime(ctx, s.exchange.Name())
+	if err != nil {
+		slog.Warn("settlement cursor load failed", "error", err)
+		return
+	}
+	settlements, err := s.exchange.Settlements(ctx, since)
+	if err != nil {
+		slog.Warn("settlement reconciliation failed", "error", err)
+		return
+	}
+	s.mu.RLock()
+	for i := range settlements {
+		s.enrichSettlementLocked(&settlements[i])
+	}
+	s.mu.RUnlock()
+	if err := s.store.SaveSettlements(ctx, settlements); err != nil {
+		slog.Warn("settlement persistence failed", "error", err)
+		return
+	}
+	history, err := s.store.LoadSettlements(ctx, 500)
+	if err != nil {
+		slog.Warn("settlement history load failed", "error", err)
+		return
+	}
+	s.mu.Lock()
+	s.snapshot.Settlements = history
+	s.mu.Unlock()
+}
+
+func (s *Service) enrichPositionLocked(position *domain.Position) {
+	event, market, quote, ok := findQuote(s.snapshot.Events, position.Ticker)
+	if !ok {
+		return
+	}
+	position.EventID = event.ID
+	position.Market = marketName(market)
+	position.Rotation = rotationForOutcome(event, quote.Outcome)
+}
+
+func (s *Service) enrichSettlementLocked(settlement *domain.Settlement) {
+	event, market, quote, ok := findQuote(s.snapshot.Events, settlement.Ticker)
+	if !ok {
+		return
+	}
+	settlement.EventID = event.ID
+	settlement.Market = marketName(market)
+	settlement.Rotation = rotationForOutcome(event, quote.Outcome)
+}
+
+func findQuote(events []domain.CanonicalEvent, ticker string) (domain.CanonicalEvent, domain.MarketView, domain.PriceQuote, bool) {
+	for _, event := range events {
+		for _, market := range event.Markets {
+			type candidate struct {
+				quote *domain.PriceQuote
+				line  string
+			}
+			quotes := []candidate{{market.Away, market.Line}, {market.Home, market.Line}, {market.Over, market.Line}, {market.Under, market.Line}}
+			for _, option := range market.Options {
+				quotes = append(quotes, candidate{option.Away, option.Line}, candidate{option.Home, option.Line}, candidate{option.Over, option.Line}, candidate{option.Under, option.Line})
+			}
+			for _, candidate := range quotes {
+				if candidate.quote != nil && candidate.quote.Ticker == ticker {
+					market.Line = candidate.line
+					return event, market, *candidate.quote, true
+				}
+			}
+		}
+	}
+	return domain.CanonicalEvent{}, domain.MarketView{}, domain.PriceQuote{}, false
+}
+
+func marketName(market domain.MarketView) string {
+	name := map[domain.MarketType]string{domain.MarketMoneyline: "Moneyline", domain.MarketSpread: "Spread", domain.MarketTotal: "Total"}[market.Type]
+	if name == "" {
+		name = string(market.Type)
+	}
+	if market.Line != "" {
+		name += " " + market.Line
+	}
+	return name
+}
+
+func rotationForOutcome(event domain.CanonicalEvent, outcome string) string {
+	for _, participant := range event.Participants {
+		if strings.EqualFold(participant.Name, outcome) {
+			return participant.Rotation
+		}
+	}
+	return ""
 }
 
 func (s *Service) reconcileParentFills(ctx context.Context, publish bool) {
@@ -988,6 +1091,7 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 	case "position":
 		if position, ok := event.Data.(domain.Position); ok {
 			s.mu.Lock()
+			s.enrichPositionLocked(&position)
 			replaced := false
 			for i := range s.snapshot.Positions {
 				if s.snapshot.Positions[i].Ticker == position.Ticker {

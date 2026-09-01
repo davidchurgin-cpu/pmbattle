@@ -2,6 +2,7 @@ package exchange
 
 import (
 	"context"
+	"time"
 
 	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
 )
@@ -42,6 +43,7 @@ type Adapter interface {
 	Snapshot(context.Context) ([]domain.Order, []domain.Position, []domain.Fill, error)
 	Balance(context.Context) (domain.Money, error)
 	Fills(context.Context, []string) ([]domain.Fill, error)
+	Settlements(context.Context, time.Time) ([]domain.Settlement, error)
 	PlaceOrder(context.Context, PlaceOrderRequest) (domain.Order, error)
 	AmendOrder(context.Context, AmendOrderRequest) (domain.Order, error)
 	CancelOrder(context.Context, string) error

@@ -62,3 +62,38 @@ func TestParentOrdersRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected parents %+v", got)
 	}
 }
+
+func TestSettlementsRoundTripAndExchangeCursor(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "settlements.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	first := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	second := first.Add(time.Hour)
+	want := []domain.Settlement{
+		{Exchange: "Kalshi", Ticker: "A", Result: "yes", Revenue: 100 * domain.Dollar, NetPnL: 20 * domain.Dollar, SettledAt: first},
+		{Exchange: "Kalshi", Ticker: "B", Result: "no", Revenue: 0, NetPnL: -40 * domain.Dollar, SettledAt: second},
+		{Exchange: "Other", Ticker: "C", SettledAt: second.Add(time.Hour)},
+	}
+	if err := store.SaveSettlements(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LoadSettlements(ctx, 2)
+	if err != nil || len(got) != 2 || got[0].Ticker != "C" || got[1].Ticker != "B" {
+		t.Fatalf("unexpected settlement history %+v err=%v", got, err)
+	}
+	latest, err := store.LatestSettlementTime(ctx, "Kalshi")
+	if err != nil || !latest.Equal(second) {
+		t.Fatalf("unexpected Kalshi cursor %v err=%v", latest, err)
+	}
+	want[1].NetPnL = -35 * domain.Dollar
+	if err := store.SaveSettlements(ctx, []domain.Settlement{want[1]}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store.LoadSettlements(ctx, 3)
+	if got[1].Ticker != "B" || got[1].NetPnL != want[1].NetPnL {
+		t.Fatalf("settlement upsert failed %+v", got)
+	}
+}

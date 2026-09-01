@@ -167,3 +167,76 @@ func TestBalanceConvertsCentsToInternalMoney(t *testing.T) {
 		t.Fatalf("balance got %d want 12345600", balance)
 	}
 }
+
+func TestSnapshotPaginatesRestingOrdersAndOpenPositions(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("limit") != "1000" {
+			t.Fatalf("missing page limit: %s", r.URL.RawQuery)
+		}
+		switch r.URL.Path {
+		case "/portfolio/orders":
+			if r.URL.Query().Get("status") != "resting" {
+				t.Fatalf("orders not limited to resting: %s", r.URL.RawQuery)
+			}
+			if r.URL.Query().Get("cursor") == "orders-2" {
+				_, _ = w.Write([]byte(`{"orders":[{"order_id":"order-2","ticker":"B","status":"resting","side":"yes","yes_price_dollars":"0.5000","initial_count_fp":"1.0000","remaining_count_fp":"1.0000"}],"cursor":""}`))
+			} else {
+				_, _ = w.Write([]byte(`{"orders":[{"order_id":"order-1","ticker":"A","status":"resting","side":"yes","yes_price_dollars":"0.4000","initial_count_fp":"2.0000","remaining_count_fp":"2.0000"}],"cursor":"orders-2"}`))
+			}
+		case "/portfolio/positions":
+			if r.URL.Query().Get("count_filter") != "position" {
+				t.Fatalf("positions missing nonzero filter: %s", r.URL.RawQuery)
+			}
+			if r.URL.Query().Get("cursor") == "positions-2" {
+				_, _ = w.Write([]byte(`{"market_positions":[{"ticker":"B","position_fp":"-3.0000","total_traded_dollars":"7.5000","market_exposure_dollars":"-1.2000","realized_pnl_dollars":"0.2500","fees_paid_dollars":"0.0500","last_updated_ts":"2026-08-31T13:00:00Z"}],"cursor":""}`))
+			} else {
+				_, _ = w.Write([]byte(`{"market_positions":[{"ticker":"A","position_fp":"2.0000","total_traded_dollars":"4.0000","market_exposure_dollars":"1.5000","realized_pnl_dollars":"-0.1000","fees_paid_dollars":"0.0200","last_updated_ts":"2026-08-31T12:00:00Z"}],"cursor":"positions-2"}`))
+			}
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client := &Client{cfg: Config{Environment: "production", KeyID: "key-id"}, baseURL: server.URL, key: key, http: server.Client()}
+	orders, positions, fills, err := client.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orders) != 2 || len(positions) != 2 || len(fills) != 0 {
+		t.Fatalf("unexpected snapshot orders=%+v positions=%+v fills=%+v", orders, positions, fills)
+	}
+	if positions[0].Ticker != "B" || positions[0].Side != "no" || positions[0].Quantity != -3*domain.Dollar || positions[0].CashRisk != 12_000 || positions[0].FeesPaid != 500 {
+		t.Fatalf("unexpected normalized position %+v", positions[0])
+	}
+}
+
+func TestSettlementsPaginatesAndCalculatesFixedPointNet(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	since := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/portfolio/settlements" || r.URL.Query().Get("limit") != "1000" || r.URL.Query().Get("min_ts") != "1788091199" {
+			t.Fatalf("unexpected request %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		if r.URL.Query().Get("cursor") == "next" {
+			_, _ = w.Write([]byte(`{"settlements":[{"ticker":"B","event_ticker":"EV-B","market_result":"no","yes_count_fp":"0.0000","yes_total_cost_dollars":"0.0000","no_count_fp":"2.0000","no_total_cost_dollars":"0.8000","revenue":200,"fee_cost":"0.0500","value":0,"settled_time":"2026-08-31T14:00:00Z"}],"cursor":""}`))
+		} else {
+			_, _ = w.Write([]byte(`{"settlements":[{"ticker":"A","event_ticker":"EV-A","market_result":"yes","yes_count_fp":"1.0000","yes_total_cost_dollars":"0.6000","no_count_fp":"0.0000","no_total_cost_dollars":"0.0000","revenue":100,"fee_cost":"0.0200","value":100,"settled_time":"2026-08-31T13:00:00Z"}],"cursor":"next"}`))
+		}
+	}))
+	defer server.Close()
+	client := &Client{cfg: Config{Environment: "production", KeyID: "key-id"}, baseURL: server.URL, key: key, http: server.Client()}
+	settlements, err := client.Settlements(context.Background(), since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settlements) != 2 || settlements[0].Ticker != "B" || settlements[0].Revenue != 2*domain.Dollar || settlements[0].NetPnL != 11_500 || settlements[1].SettlementValue != domain.Dollar {
+		t.Fatalf("unexpected settlements %+v", settlements)
+	}
+}

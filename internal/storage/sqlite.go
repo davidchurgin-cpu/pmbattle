@@ -35,6 +35,7 @@ func (s *Store) init(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, kind TEXT NOT NULL, payload BLOB NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS parent_orders (id TEXT PRIMARY KEY, status TEXT NOT NULL, payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS settlements (exchange TEXT NOT NULL, ticker TEXT NOT NULL, settled_at TEXT NOT NULL, payload BLOB NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(exchange,ticker))`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -42,6 +43,72 @@ func (s *Store) init(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func (s *Store) SaveSettlements(ctx context.Context, settlements []domain.Settlement) error {
+	if len(settlements) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO settlements(exchange,ticker,settled_at,payload,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(exchange,ticker) DO UPDATE SET settled_at=excluded.settled_at,payload=excluded.payload,updated_at=excluded.updated_at`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, settlement := range settlements {
+		payload, err := json.Marshal(settlement)
+		if err != nil {
+			return err
+		}
+		if _, err = stmt.ExecContext(ctx, settlement.Exchange, settlement.Ticker, settlement.SettledAt.UTC().Format(time.RFC3339Nano), payload, now); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) LoadSettlements(ctx context.Context, limit int) ([]domain.Settlement, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM settlements ORDER BY settled_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	settlements := make([]domain.Settlement, 0)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var settlement domain.Settlement
+		if err := json.Unmarshal(payload, &settlement); err != nil {
+			return nil, err
+		}
+		settlements = append(settlements, settlement)
+	}
+	return settlements, rows.Err()
+}
+
+func (s *Store) LatestSettlementTime(ctx context.Context, exchange string) (time.Time, error) {
+	var value sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(settled_at) FROM settlements WHERE exchange = ?`, exchange).Scan(&value); err != nil {
+		return time.Time{}, err
+	}
+	if !value.Valid || value.String == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value.String)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse latest settlement time: %w", err)
+	}
+	return parsed, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }

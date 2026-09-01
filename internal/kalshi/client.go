@@ -230,17 +230,56 @@ func (c *Client) Snapshot(ctx context.Context) ([]domain.Order, []domain.Positio
 	if c.key == nil || c.cfg.KeyID == "" {
 		return nil, nil, nil, nil
 	}
-	var ordersPayload struct {
-		Orders []rawOrder `json:"orders"`
+	orders := make([]domain.Order, 0)
+	cursor := ""
+	for page := 0; page < 100; page++ {
+		path := "/portfolio/orders?status=resting&limit=1000"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var payload struct {
+			Orders []rawOrder `json:"orders"`
+			Cursor string     `json:"cursor"`
+		}
+		if err := c.getJSON(ctx, path, &payload); err != nil {
+			return nil, nil, nil, err
+		}
+		for _, raw := range payload.Orders {
+			orders = append(orders, normalizeOrder(raw))
+		}
+		if payload.Cursor == "" {
+			break
+		}
+		cursor = payload.Cursor
 	}
-	if err := c.getJSON(ctx, "/portfolio/orders?status=resting", &ordersPayload); err != nil {
-		return nil, nil, nil, err
+
+	positions := make([]domain.Position, 0)
+	cursor = ""
+	for page := 0; page < 100; page++ {
+		path := "/portfolio/positions?limit=1000&count_filter=position"
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var payload struct {
+			Positions []rawPosition `json:"market_positions"`
+			Cursor    string        `json:"cursor"`
+		}
+		if err := c.getJSON(ctx, path, &payload); err != nil {
+			return nil, nil, nil, err
+		}
+		for _, raw := range payload.Positions {
+			position := normalizePosition(raw)
+			if position.Quantity != 0 {
+				positions = append(positions, position)
+			}
+		}
+		if payload.Cursor == "" {
+			break
+		}
+		cursor = payload.Cursor
 	}
-	orders := make([]domain.Order, 0, len(ordersPayload.Orders))
-	for _, raw := range ordersPayload.Orders {
-		orders = append(orders, normalizeOrder(raw))
-	}
-	return orders, nil, nil, nil
+	sort.SliceStable(positions, func(i, j int) bool { return positions[i].UpdatedAt.After(positions[j].UpdatedAt) })
+	return orders, positions, nil, nil
 }
 
 func (c *Client) Balance(ctx context.Context) (domain.Money, error) {
@@ -297,6 +336,45 @@ func (c *Client) Fills(ctx context.Context, orderIDs []string) ([]domain.Fill, e
 		}
 	}
 	sort.SliceStable(result, func(i, j int) bool { return result[i].CreatedAt.Before(result[j].CreatedAt) })
+	return result, nil
+}
+
+func (c *Client) Settlements(ctx context.Context, since time.Time) ([]domain.Settlement, error) {
+	if c.key == nil || c.cfg.KeyID == "" {
+		return []domain.Settlement{}, nil
+	}
+	result := make([]domain.Settlement, 0)
+	seen := make(map[string]bool)
+	cursor := ""
+	for page := 0; page < 100; page++ {
+		path := "/portfolio/settlements?limit=1000"
+		if !since.IsZero() {
+			// Include one overlap second because the API filter is second-granularity.
+			path += "&min_ts=" + strconv.FormatInt(since.Add(-time.Second).Unix(), 10)
+		}
+		if cursor != "" {
+			path += "&cursor=" + url.QueryEscape(cursor)
+		}
+		var payload struct {
+			Settlements []rawSettlement `json:"settlements"`
+			Cursor      string          `json:"cursor"`
+		}
+		if err := c.getJSON(ctx, path, &payload); err != nil {
+			return nil, err
+		}
+		for _, raw := range payload.Settlements {
+			settlement := normalizeSettlement(raw)
+			if settlement.Ticker != "" && !seen[settlement.Ticker] {
+				seen[settlement.Ticker] = true
+				result = append(result, settlement)
+			}
+		}
+		if payload.Cursor == "" {
+			break
+		}
+		cursor = payload.Cursor
+	}
+	sort.SliceStable(result, func(i, j int) bool { return result[i].SettledAt.After(result[j].SettledAt) })
 	return result, nil
 }
 
@@ -456,6 +534,69 @@ type rawFill struct {
 	IsTaker       bool      `json:"is_taker"`
 	Created       time.Time `json:"created_time"`
 	TimestampMS   int64     `json:"ts_ms"`
+}
+
+type rawPosition struct {
+	Ticker         string    `json:"ticker"`
+	TotalTraded    string    `json:"total_traded_dollars"`
+	Quantity       string    `json:"position_fp"`
+	MarketExposure string    `json:"market_exposure_dollars"`
+	RealizedPnL    string    `json:"realized_pnl_dollars"`
+	FeesPaid       string    `json:"fees_paid_dollars"`
+	LastUpdated    time.Time `json:"last_updated_ts"`
+}
+
+type rawSettlement struct {
+	Ticker       string    `json:"ticker"`
+	EventTicker  string    `json:"event_ticker"`
+	Result       string    `json:"market_result"`
+	YesCount     string    `json:"yes_count_fp"`
+	YesTotalCost string    `json:"yes_total_cost_dollars"`
+	NoCount      string    `json:"no_count_fp"`
+	NoTotalCost  string    `json:"no_total_cost_dollars"`
+	RevenueCents int64     `json:"revenue"`
+	SettledAt    time.Time `json:"settled_time"`
+	FeeCost      string    `json:"fee_cost"`
+	ValueCents   int64     `json:"value"`
+}
+
+func normalizePosition(raw rawPosition) domain.Position {
+	quantity, _ := fixed.Parse(raw.Quantity)
+	totalTraded, _ := fixed.Parse(raw.TotalTraded)
+	exposure, _ := fixed.Parse(raw.MarketExposure)
+	realized, _ := fixed.Parse(raw.RealizedPnL)
+	fees, _ := fixed.Parse(raw.FeesPaid)
+	side := "yes"
+	if quantity < 0 {
+		side = "no"
+	}
+	return domain.Position{
+		Exchange: "Kalshi", Ticker: raw.Ticker, Market: raw.Ticker, Side: side,
+		Quantity: quantity, CashRisk: absMoney(exposure), TotalTraded: totalTraded,
+		RealizedPnL: realized, FeesPaid: fees, UpdatedAt: raw.LastUpdated,
+	}
+}
+
+func normalizeSettlement(raw rawSettlement) domain.Settlement {
+	yesQuantity, _ := fixed.Parse(raw.YesCount)
+	noQuantity, _ := fixed.Parse(raw.NoCount)
+	yesCost, _ := fixed.Parse(raw.YesTotalCost)
+	noCost, _ := fixed.Parse(raw.NoTotalCost)
+	fee, _ := fixed.Parse(raw.FeeCost)
+	revenue := domain.Money(raw.RevenueCents * 100)
+	return domain.Settlement{
+		Exchange: "Kalshi", Ticker: raw.Ticker, EventTicker: raw.EventTicker, Result: raw.Result,
+		YesQuantity: yesQuantity, NoQuantity: noQuantity, YesTotalCost: yesCost, NoTotalCost: noCost,
+		Revenue: revenue, Fee: fee, NetPnL: revenue - yesCost - noCost - fee,
+		SettlementValue: domain.Money(raw.ValueCents * 100), SettledAt: raw.SettledAt,
+	}
+}
+
+func absMoney(value domain.Money) domain.Money {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func normalizeFill(raw rawFill) domain.Fill {
@@ -680,9 +821,13 @@ func translate(message wsMessage) (domain.StreamEvent, bool, error) {
 		cost, _ := fixed.Parse(raw.Cost)
 		average := domain.Money(0)
 		if quantity != 0 {
-			average = domain.Money(int64(cost) * int64(domain.Dollar) / int64(quantity))
+			average = absMoney(domain.Money(int64(cost) * int64(domain.Dollar) / int64(quantity)))
 		}
-		position := domain.Position{Exchange: "Kalshi", Ticker: raw.Ticker, Market: raw.Ticker, Quantity: quantity, CashRisk: cost, AveragePrice: average}
+		side := "yes"
+		if quantity < 0 {
+			side = "no"
+		}
+		position := domain.Position{Exchange: "Kalshi", Ticker: raw.Ticker, Market: raw.Ticker, Side: side, Quantity: quantity, CashRisk: absMoney(cost), AveragePrice: average, UpdatedAt: time.Now().UTC()}
 		return domain.StreamEvent{Type: "position", Data: position}, true, nil
 	case "market_lifecycle_v2":
 		return domain.StreamEvent{Type: "market_lifecycle", Data: json.RawMessage(message.Msg)}, true, nil

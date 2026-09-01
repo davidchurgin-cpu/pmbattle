@@ -16,10 +16,12 @@ import (
 )
 
 type appFakeAdapter struct {
-	placed     []exchange.PlaceOrderRequest
-	amended    []exchange.AmendOrderRequest
-	canceled   []string
-	failCancel string
+	placed            []exchange.PlaceOrderRequest
+	amended           []exchange.AmendOrderRequest
+	canceled          []string
+	failCancel        string
+	snapshotPositions []domain.Position
+	settlements       []domain.Settlement
 }
 
 func (f *appFakeAdapter) Name() string { return "fake" }
@@ -33,11 +35,14 @@ func (f *appFakeAdapter) SubscribeBooks(context.Context, []string) (*exchange.Su
 	return nil, nil
 }
 func (f *appFakeAdapter) Snapshot(context.Context) ([]domain.Order, []domain.Position, []domain.Fill, error) {
-	return nil, nil, nil, nil
+	return nil, f.snapshotPositions, nil, nil
 }
 func (f *appFakeAdapter) Balance(context.Context) (domain.Money, error) { return 0, nil }
 func (f *appFakeAdapter) Fills(context.Context, []string) ([]domain.Fill, error) {
 	return nil, nil
+}
+func (f *appFakeAdapter) Settlements(context.Context, time.Time) ([]domain.Settlement, error) {
+	return f.settlements, nil
 }
 func (f *appFakeAdapter) PlaceOrder(_ context.Context, request exchange.PlaceOrderRequest) (domain.Order, error) {
 	f.placed = append(f.placed, request)
@@ -86,6 +91,48 @@ func TestFillReconcilesAndPersistsParentBeforeBrowserEvent(t *testing.T) {
 	case duplicate := <-events:
 		t.Fatalf("duplicate fill was published: %+v", duplicate)
 	default:
+	}
+}
+
+func TestAccountReconciliationEnrichesAndPersistsPositionsAndSettlements(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "account.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	settledAt := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	adapter := &appFakeAdapter{
+		snapshotPositions: []domain.Position{{Exchange: "Kalshi", Ticker: "TEST", Quantity: 2 * domain.Dollar, CashRisk: domain.Dollar}},
+		settlements:       []domain.Settlement{{Exchange: "fake", Ticker: "TEST", Result: "yes", NetPnL: 40 * domain.Dollar, SettledAt: settledAt}},
+	}
+	service := New(Config{}, store, adapter)
+	quote := domain.PriceQuote{Ticker: "TEST", Outcome: "Team A"}
+	service.snapshot.Events = []domain.CanonicalEvent{{ID: "event-1", Participants: []domain.Participant{{Rotation: "451", Name: "Team A"}, {Rotation: "452", Name: "Team B"}}, Markets: []domain.MarketView{{Type: domain.MarketSpread, Line: "3.5", Away: &quote}}}}
+	events, cancel := service.Subscribe()
+	defer cancel()
+	service.reconcileAccount(context.Background(), true)
+	event := <-events
+	if event.Type != "position" {
+		t.Fatalf("first published event = %q", event.Type)
+	}
+	accountEvent := <-events
+	if accountEvent.Type != "account_snapshot" {
+		t.Fatalf("second published event = %q", accountEvent.Type)
+	}
+	snapshot := service.Snapshot()
+	if len(snapshot.Positions) != 1 || snapshot.Positions[0].EventID != "event-1" || snapshot.Positions[0].Rotation != "451" || snapshot.Positions[0].Market != "Spread 3.5" {
+		t.Fatalf("position not enriched: %+v", snapshot.Positions)
+	}
+	if len(snapshot.Settlements) != 1 || snapshot.Settlements[0].EventID != "event-1" || snapshot.Settlements[0].Rotation != "451" || snapshot.Settlements[0].Market != "Spread 3.5" {
+		t.Fatalf("settlement not enriched: %+v", snapshot.Settlements)
+	}
+	account := accountEvent.Data.(domain.AccountSnapshot)
+	if len(account.Settlements) != 1 || account.Settlements[0].Ticker != "TEST" {
+		t.Fatalf("settlement absent from browser account snapshot: %+v", account)
+	}
+	persisted, err := store.LoadSettlements(context.Background(), 10)
+	if err != nil || len(persisted) != 1 || !persisted[0].SettledAt.Equal(settledAt) {
+		t.Fatalf("settlement not persisted: %+v err=%v", persisted, err)
 	}
 }
 

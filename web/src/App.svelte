@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import type { AccountSnapshot, BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
 
-  let snapshot: Snapshot = { events: [], parentOrders: [], orders: [], positions: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', latencyMs: 0, tradingEnabled: false }, bankroll: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
+  let snapshot: Snapshot = { events: [], parentOrders: [], orders: [], positions: [], settlements: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', latencyMs: 0, tradingEnabled: false }, bankroll: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
   let view: 'schedule' | 'settings' = 'schedule'
   let draftSports: string[] = []
   let draftExcludeAddedGames = false
@@ -86,7 +86,7 @@
   $: activeParents = snapshot.parentOrders.filter(parent => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((parent.status || '').toLowerCase()))
 
   function normalizeSnapshot(value: Snapshot): Snapshot {
-    return { ...value, events: value.events || [], parentOrders: value.parentOrders || [], orders: value.orders || [], positions: value.positions || [], fills: value.fills || [], settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
+    return { ...value, events: value.events || [], parentOrders: value.parentOrders || [], orders: value.orders || [], positions: value.positions || [], settlements: value.settlements || [], fills: value.fills || [], settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
   }
   function normalizeBook(value: OrderBook): OrderBook { return { ...value, yes: value.yes || [], no: value.no || [] } }
   function fillName(fill: Fill) { return fill.team || fill.market || fill.ticker }
@@ -221,7 +221,7 @@
     if (message.type === 'account_snapshot') {
       const account = message.data as AccountSnapshot
       ;(account.fills || []).forEach(fill => seenFillIDs.add(fill.id))
-      snapshot = { ...snapshot, parentOrders: account.parentOrders || [], orders: account.orders || [], positions: account.positions || [], fills: account.fills || [], bankroll: account.bankroll || 0, atRisk: account.atRisk || 0 }
+      snapshot = { ...snapshot, parentOrders: account.parentOrders || [], orders: account.orders || [], positions: account.positions || [], settlements: account.settlements || [], fills: account.fills || [], bankroll: account.bankroll || 0, atRisk: account.atRisk || 0 }
     }
     if (message.type === 'schedule') snapshot = { ...snapshot, events: (message.data as Event[]) || [] }
     if (message.type === 'health') snapshot = { ...snapshot, health: message.data as Health }
@@ -330,7 +330,7 @@
       <button class:active={trayTab === 'positions'} on:click={() => { trayTab = 'positions'; trayOpen = true }}>Positions ({snapshot.positions.length})</button>
       <button class:active={trayTab === 'orders'} on:click={() => { trayTab = 'orders'; trayOpen = true }}>Orders ({snapshot.orders.length})</button>
       <button class:active={trayTab === 'fills'} on:click={() => { trayTab = 'fills'; trayOpen = true }}>Live fills</button>
-      <button class:active={trayTab === 'history'} on:click={() => { trayTab = 'history'; trayOpen = true }}>History</button>
+      <button class:active={trayTab === 'history'} on:click={() => { trayTab = 'history'; trayOpen = true }}>History ({snapshot.settlements.length})</button>
       <button class="tray-toggle" on:click={() => trayOpen = !trayOpen}>{trayOpen ? 'Collapse ↓' : 'Open ↑'}</button>
     </div>
     {#if trayOpen}<div class="tray-body">
@@ -341,8 +341,12 @@
         {#if snapshot.health.tradingEnabled}<div class="cancel-scope-bar"><b>Demo kill switch</b><select bind:value={cancelGroupScope} aria-label="Cancel scope"><option value="all">All managed orders</option><option value="event" disabled={!selectedEvent}>Current game</option><option value="strategy:basic">Basic orders</option><option value="strategy:iceberg">Iceberg orders</option><option value="strategy:follow">Follow orders</option><option value="exchange:Kalshi">Kalshi managed orders</option></select><button disabled={cancelingGroup || activeParents.length === 0} on:click={cancelGroup}>{cancelingGroup ? 'Canceling…' : 'Cancel scope'}</button><small aria-live="polite">{cancelGroupStatus}</small></div>{/if}
         {#each snapshot.orders as order}<div class="table-row compact"><span><b>#{order.rotation} {order.market}</b><small>{order.ticker}</small></span><span>{order.exchange}</span><span>{qty(order.quantity)}</span><span>{money(order.limitPrice)}</span><span>{monitoredStatus(order)}</span><span>—</span><span class="order-risk">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? 'Resuming…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
       {:else if trayTab === 'positions'}
-        {#each snapshot.positions as position}<div class="table-row compact"><span><b>#{position.rotation} {position.market}</b><small>{position.ticker}</small></span><span>{position.exchange}</span><span>{qty(position.quantity)}</span><span>{money(position.averagePrice)}</span><span>{money(position.currentPrice)}</span><span>—</span><span>{money(position.unrealizedPnl)}</span></div>{:else}<div class="empty">No positions</div>{/each}
-      {:else}<div class="empty">Historical audit records will appear here.</div>{/if}
+        <div class="table-head"><span>Market</span><span>Exchange</span><span>Side / quantity</span><span>Exposure</span><span>Traded</span><span>Fees</span><span>Realized P&amp;L</span></div>
+        {#each snapshot.positions as position}<div class="table-row compact"><span><b>{position.rotation ? `#${position.rotation} ` : ''}{position.market}</b><small>{position.ticker}</small></span><span>{position.exchange}</span><span>{(position.side || 'yes').toUpperCase()} · {qty(Math.abs(position.quantity))}</span><span>{money(position.cashRisk)}</span><span>{money(position.totalTraded || 0)}</span><span>{money(position.feesPaid || 0)}</span><span class:positive={(position.realizedPnl || 0) >= 0} class:negative={(position.realizedPnl || 0) < 0}>{money(position.realizedPnl || 0)}</span></div>{:else}<div class="empty">No open positions</div>{/each}
+      {:else}
+        <div class="table-head"><span>Settled / market</span><span>Exchange</span><span>Result</span><span>Yes / No</span><span>Revenue</span><span>Fees</span><span>Net P&amp;L</span></div>
+        {#each snapshot.settlements as settlement}<div class="table-row compact"><span><b>{new Date(settlement.settledAt).toLocaleString()}{settlement.rotation ? ` · #${settlement.rotation}` : ''}</b><small>{settlement.market || settlement.ticker}</small></span><span>{settlement.exchange}</span><span>{settlement.result.toUpperCase()}</span><span>{qty(settlement.yesQuantity)} / {qty(settlement.noQuantity)}</span><span>{money(settlement.revenue)}</span><span>{money(settlement.fee)}</span><span class:positive={settlement.netPnl >= 0} class:negative={settlement.netPnl < 0}>{money(settlement.netPnl)}</span></div>{:else}<div class="empty">No settled markets yet</div>{/each}
+      {/if}
     </div>{/if}
   </section>
   {:else}

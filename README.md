@@ -25,11 +25,13 @@ The production connection is deliberately **read-only**. The terminal includes t
 - Current Kalshi V2 fixed-point order requests, including correct NO-to-YES-book conversion and idempotent client order IDs
 - Durable parent orders that survive restart, deduplicate fills, and reduce remaining risk before fill notifications reach the browser
 - Order-scoped REST fill recovery after startup and account-stream reconnects, plus the authenticated read-only available bankroll
+- Paginated REST recovery of every open Kalshi position and settled market, with fixed-point exposure, fees, realized P&L, and recent settlement history persisted across restarts
+- A live Positions view for unsettled exposure and a separate History view for up to 500 recent settlements; settled markets never count as current cash at risk
 - Always-visible dashboard order monitor with working quantities and recent fills, plus immediate visual alerts for every newly streamed full or partial fill
 - Explicit, accessible side identities across the board, book, and slip: Away blue, Home purple, Over green, and Under amber
 - Sequence-checked in-memory order books with stale-book detection
-- Live browser stream for books, health, fills, orders, and positions
-- SQLite WAL persistence for schedules, mappings, settings, and audit records
+- Live browser stream for books, health, fills, orders, positions, and reconciled settlement history
+- SQLite WAL persistence for schedules, mappings, settings, settlements, parent orders, and audit records
 - Standard light and dark themes
 - Persisted Settings tab for enabling only the sports you want to load and subscribe to
 - Optional filter for six-digit extra/added games with lower market limits
