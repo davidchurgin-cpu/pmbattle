@@ -4,6 +4,8 @@
 
 Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 has basic, iceberg, and controlled follow orders. Limit, post-only, IOC basic orders, limit/post-only icebergs, and post-only follow parents flow through one durable cash-at-risk model into Kalshi's V2 order API. Parent state survives restart and reconciles order-scoped fills, paginated open positions, and settled-market history before the browser receives account activity. Order entry is disabled by default but can now be enabled for demo or production.
 
+September 1, 2026 hardening (branch `claude/code-review-assessment-t8xog4`): a `CLAUDE.md` brief for AI sessions, corrected live/demo safety labels, a `PMBATTLE_MAX_CASH_RISK` per-order cap, a `PMBATTLE_PASSWORD` sign-in that is mandatory whenever trading is enabled, a request-header check against cross-site request forgery, amend responses that may carry a replacement order ID, and `FIRST-LIVE-ORDER.md`, the owner's step-by-step script for the first real order. The owner is not a programmer and places every order personally in the browser; no AI session may place, amend, cancel, or resume orders.
+
 ## Architecture
 
 - `main.go` loads configuration, opens SQLite, starts the application service, embeds the frontend, and shuts down gracefully.
@@ -136,7 +138,8 @@ Kalshi's own documentation sites were unreachable from the remote coding environ
 - The same live validation restored both moneyline sides for Clemson-LSU, Wisconsin-Notre Dame, UL Monroe-Mississippi State, UNLV-Hawaii, and UCLA-California. Of 86 enabled games, 63 currently have at least one mapped Kalshi moneyline; 23 have no mapped market. UCLA-California has no Kalshi spread or total event in the current catalog, so those cells correctly display `Not listed`.
 - Initial league-to-series routing covers the major US leagues plus selected top soccer leagues. Add aliases as new schedule leagues are enabled; unknown leagues intentionally load no Kalshi series.
 - The current general Kalshi fee rule is versioned in one module. Market-specific fee exceptions remain a known follow-up and must be verified during manual testing.
-- Follow has automated coverage with a fake demo adapter and the current V2 amend contract, but it has not yet been manually exercised with separate Kalshi demo credentials. Production remains hard locked.
+- Follow has automated coverage with a fake adapter, including replacement order IDs on amend, but it has never been exercised against Kalshi. It must not run live until the post-only and amend-response questions in "Kalshi API verification status" are settled. The owner has chosen to test in production with a small `PMBATTLE_MAX_CASH_RISK` rather than in the demo environment.
+- No order of any kind has been placed through PMBattle yet, in demo or production. `FIRST-LIVE-ORDER.md` is the script for the first one.
 - The shared-bankroll gate is process-local and currently covers the single Kalshi adapter. The pure multi-exchange allocation planner is implemented and tested, but live routing still needs a second adapter plus the execution coordinator that creates children and resizes/cancels competing orders as fills arrive. Do not infer live smart routing from the planner alone.
 - Completed parents are retained in SQLite without pruning yet. A retention policy will be needed as history grows.
 - Audit records are append-only and paginated but do not yet have a retention/archive policy; server operators should include `pmbattle.db` in normal backups.
@@ -147,11 +150,18 @@ Kalshi's own documentation sites were unreachable from the remote coding environ
 - Production mutation is disabled by default and becomes available only when the server starts with production credentials, simulated mode off, and `PMBATTLE_TRADING_ENABLED=true`.
 - The schedule feed is HTTP. Deploy through the office server and monitor its freshness; do not infer a game state when the feed is unavailable.
 
-## Next milestone: manual Kalshi order validation
+## Next milestone: the owner's first live basic order
 
-1. Start with a small manually selected production order and verify the request, acknowledgement, open-order display, cancellation, and fill monitoring against Kalshi.
-2. Validate basic orders before testing iceberg or follow behavior; compare fees, partial fills, reconnect recovery, and risk totals against Kalshi's account display.
-3. Keep `PMBATTLE_TRADING_ENABLED=false` whenever manual testing is not actively underway.
+The owner runs `FIRST-LIVE-ORDER.md` in the browser against production with `PMBATTLE_MAX_CASH_RISK=5`. The next AI session's job is to act on what they report:
+
+1. Read the owner's results message. If Part 1 (read-only sanity) failed, fix that before anything else.
+2. If Part 2 contract counts differed between PMBattle and Kalshi, inspect `QuantityForCashRisk` sizing and the `count` string sent by `PlaceOrder` against the audit record for that order.
+3. If Part 3 fees differed, adjust `pricing.KalshiFee` rounding to match Kalshi's rule (see "Kalshi API verification status") and add a test reproducing the owner's exact numbers.
+4. Record the outcome, with dates and numbers, in "Known limitations", and delete the lines there that the live test has now settled.
+5. Only after two clean basic orders: design a live test for iceberg (one slice, tiny size), then for follow. Follow needs proof that a post-only order that would cross is rejected, and that the amend response's order ID behavior matches the replacement-ID handling. Both are described in the verification section.
+6. Keep `PMBATTLE_TRADING_ENABLED=false` in every start script that is not actively being used for a test.
+
+Housekeeping still open: retention for completed parents and audit rows; branch merge of `claude/code-review-assessment-t8xog4` into `main` once the owner is happy with it.
 
 After a second exchange is selected, connect its normalized adapter to `internal/routing`, then add the fill-driven coordinator that reduces parent remaining risk before resizing or canceling competing venue children. Until then, the planner remains a tested, non-mutating foundation rather than an order path.
 

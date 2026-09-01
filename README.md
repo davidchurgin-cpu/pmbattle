@@ -44,6 +44,8 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - Standard light and dark themes
 - Persisted Settings tab for enabling only the sports you want to load and subscribe to
 - Optional filter for six-digit extra/added games with lower market limits
+- Browser sign-in with `PMBATTLE_PASSWORD`, required whenever order entry is enabled, plus a request-header check that blocks cross-site request forgery on every state-changing call
+- `PMBATTLE_MAX_CASH_RISK` per-order cash-risk cap for live testing, shown in Settings and enforced by both the order slip and the engine
 - Windows, Linux, and Docker builds
 
 ## Quick start
@@ -95,6 +97,7 @@ PMBATTLE_KALSHI_ENV=demo
 PMBATTLE_KALSHI_KEY_ID=your-key-id
 PMBATTLE_KALSHI_PRIVATE_KEY_PATH=/secure/path/kalshi-private-key.pem
 PMBATTLE_SIMULATED=false
+PMBATTLE_PASSWORD=choose-a-real-password
 PMBATTLE_TRADING_ENABLED=false
 ```
 
@@ -102,7 +105,7 @@ PMBATTLE_TRADING_ENABLED=false
 
 `PMBATTLE_MAX_CASH_RISK` is an optional per-order ceiling in dollars, between 1 and 20000. While testing real orders, set it to a small number such as `5`; the server then refuses any single order with more cash at risk, the order slip disables its button above that amount, and the Settings safety panel shows the active cap. It can lower the built-in $20,000 limit but never raise it.
 
-Demo and production credentials are different. Never commit private keys, `.env`, databases, or server secrets. `PMBATTLE_TRADING_ENABLED` defaults to `false`. To test real orders manually, use production credentials with `PMBATTLE_KALSHI_ENV=production`, `PMBATTLE_SIMULATED=false`, and `PMBATTLE_TRADING_ENABLED=true`, then restart PMBattle. The interface clearly labels real-order mode and asks for confirmation before each production submission. The adapter still rejects mutations unless trading was enabled at startup.
+Demo and production credentials are different. Never commit private keys, `.env`, databases, or server secrets. `PMBATTLE_TRADING_ENABLED` defaults to `false`. To test real orders manually, use production credentials with `PMBATTLE_KALSHI_ENV=production`, `PMBATTLE_SIMULATED=false`, and `PMBATTLE_TRADING_ENABLED=true`, then restart PMBattle. The interface clearly labels real-order mode and asks for confirmation before each production submission. The adapter still rejects mutations unless trading was enabled at startup. Follow [FIRST-LIVE-ORDER.md](FIRST-LIVE-ORDER.md) for the first real order; it walks through a small order that is canceled before it fills, then one that fills, and how to lock trading again.
 
 ### Using another PC
 
