@@ -395,6 +395,28 @@ func TestCancelReconciledOrderWithoutParent(t *testing.T) {
 	}
 }
 
+func TestAmendReconciledOrderUsesRemainingQuantityAndUpdatesImmediately(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "reconciled-amend.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter := &appFakeAdapter{}
+	service := New(Config{TradingEnabled: true, ExchangeEnvironment: "production", MaxCashRisk: 100 * domain.Dollar}, store, adapter)
+	service.snapshot.Orders = []domain.Order{{ID: "live-order-1", Exchange: "Kalshi", Ticker: "TEST", Side: "yes", Status: "resting", Quantity: 10 * domain.Dollar, FilledQuantity: 2 * domain.Dollar, LimitPrice: 5000, CashRisk: 4 * domain.Dollar}}
+
+	order, err := service.AmendOrder(context.Background(), "live-order-1", 6*domain.Dollar, 4500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adapter.amended) != 1 || adapter.amended[0].Quantity != 8*domain.Dollar || adapter.amended[0].LimitPrice != 4500 {
+		t.Fatalf("wrong exchange amend request: %+v", adapter.amended)
+	}
+	if order.Quantity != 8*domain.Dollar || order.FilledQuantity != 2*domain.Dollar || order.LimitPrice != 4500 || service.Snapshot().Orders[0].LimitPrice != 4500 {
+		t.Fatalf("amend was not reflected immediately: %+v", order)
+	}
+}
+
 func TestResumeFollowRefusesStaleBookBeforeEngineStateChanges(t *testing.T) {
 	store, err := storage.Open(filepath.Join(t.TempDir(), "resume-stale.db"))
 	if err != nil {

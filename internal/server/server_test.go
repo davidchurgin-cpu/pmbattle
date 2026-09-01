@@ -173,6 +173,16 @@ func TestReconciledOrderCancelEndpointIsLockedInProduction(t *testing.T) {
 	}
 }
 
+func TestOrderAmendEndpointIsLockedInProduction(t *testing.T) {
+	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
+	request := mutatingRequest(http.MethodPatch, "/api/orders/order-1", `{"remainingQuantity":10000,"limitPrice":5000}`)
+	response := httptest.NewRecorder()
+	New(service, nil).Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status %d, want %d; body=%s", response.Code, http.StatusForbidden, response.Body.String())
+	}
+}
+
 func TestSecurityHeadersAndCrossOriginWebSocketRejection(t *testing.T) {
 	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
 	handler := New(service, nil).Handler()

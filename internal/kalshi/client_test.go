@@ -52,6 +52,13 @@ func TestNormalizeOrderUsesCurrentFixedPointFields(t *testing.T) {
 	}
 }
 
+func TestNormalizePositionDerivesAverageEntryPrice(t *testing.T) {
+	position := normalizePosition(rawPosition{Ticker: "TEST", Quantity: "10.00", MarketExposure: "5.6000", FeesPaid: "0.1000"})
+	if position.AveragePrice != 5600 || position.CashRisk != 56_000 || position.FeesPaid != 1000 {
+		t.Fatalf("unexpected normalized position %+v", position)
+	}
+}
+
 func TestPlaceNoOrderUsesV2AskOnYesBook(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {

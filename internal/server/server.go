@@ -40,6 +40,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/books/{ticker}", s.releaseBook)
 	mux.HandleFunc("POST /api/parent-orders", s.createParentOrder)
 	mux.HandleFunc("DELETE /api/orders/{id}", s.cancelOrder)
+	mux.HandleFunc("PATCH /api/orders/{id}", s.amendOrder)
 	mux.HandleFunc("POST /api/parent-orders/cancel", s.cancelParentOrders)
 	mux.HandleFunc("POST /api/parent-orders/{id}/resume", s.resumeParentOrder)
 	mux.HandleFunc("DELETE /api/parent-orders/{id}", s.cancelParentOrder)
@@ -57,6 +58,34 @@ func (s *Server) cancelOrder(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusForbidden
 		} else if errors.Is(err, app.ErrOrderNotFound) {
 			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, order)
+}
+func (s *Server) amendOrder(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	var input struct {
+		RemainingQuantity domain.Money `json:"remainingQuantity"`
+		LimitPrice        domain.Money `json:"limitPrice"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid order edit"})
+		return
+	}
+	order, err := s.service.AmendOrder(r.Context(), r.PathValue("id"), input.RemainingQuantity, input.LimitPrice)
+	if err != nil {
+		status := http.StatusBadGateway
+		switch {
+		case errors.Is(err, orderengine.ErrDisabled):
+			status = http.StatusForbidden
+		case errors.Is(err, app.ErrOrderNotFound):
+			status = http.StatusNotFound
+		case errors.Is(err, app.ErrOrderNotEditable), errors.Is(err, orderengine.ErrInvalidOrder), errors.Is(err, orderengine.ErrCashRiskCap):
+			status = http.StatusUnprocessableEntity
 		}
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return

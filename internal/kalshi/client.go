@@ -686,10 +686,14 @@ func normalizePosition(raw rawPosition) domain.Position {
 	if quantity < 0 {
 		side = "no"
 	}
+	average := domain.Money(0)
+	if quantity != 0 {
+		average = absMoney(domain.Money(int64(exposure) * int64(domain.Dollar) / int64(quantity)))
+	}
 	return domain.Position{
 		Exchange: "Kalshi", Ticker: raw.Ticker, Market: raw.Ticker, Side: side,
 		Quantity: quantity, CashRisk: absMoney(exposure), TotalTraded: totalTraded,
-		RealizedPnL: realized, FeesPaid: fees, UpdatedAt: raw.LastUpdated,
+		AveragePrice: average, RealizedPnL: realized, FeesPaid: fees, UpdatedAt: raw.LastUpdated,
 	}
 }
 

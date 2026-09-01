@@ -190,6 +190,7 @@ type CreateParentOrderInput struct {
 
 var ErrInvalidCancelScope = errors.New("invalid cancel scope")
 var ErrOrderNotFound = errors.New("active order not found")
+var ErrOrderNotEditable = errors.New("strategy-managed orders cannot be edited manually")
 var ErrInsufficientAvailableBalance = errors.New("cash-risk target exceeds available bankroll")
 var ErrMappingReviewNotFound = errors.New("mapping review not found")
 var ErrInvalidMappingDecision = errors.New("mapping decision is not one of the reviewed schedule candidates")
@@ -498,6 +499,80 @@ func (s *Service) CancelOrder(ctx context.Context, id string) (domain.Order, err
 	s.broadcast(domain.StreamEvent{Type: "order", Data: target})
 	s.broadcastAccountSummary()
 	return target, nil
+}
+
+func (s *Service) AmendOrder(ctx context.Context, id string, remainingQuantity, limitPrice domain.Money) (domain.Order, error) {
+	if !s.Snapshot().Health.TradingEnabled {
+		return domain.Order{}, orderengine.ErrDisabled
+	}
+	if remainingQuantity <= 0 || limitPrice <= 0 || limitPrice >= domain.Dollar {
+		return domain.Order{}, orderengine.ErrInvalidOrder
+	}
+	s.orderMu.Lock()
+	defer s.orderMu.Unlock()
+	s.mu.RLock()
+	var target domain.Order
+	for _, order := range s.snapshot.Orders {
+		if order.ID == id && !parentOrderTerminal(order.Status) {
+			target = order
+			break
+		}
+	}
+	s.mu.RUnlock()
+	if target.ID == "" {
+		return domain.Order{}, ErrOrderNotFound
+	}
+	if parent, ok := s.orderEngine.ParentForChild(id); ok && parent.Strategy != "basic" {
+		return domain.Order{}, ErrOrderNotEditable
+	}
+	quote, err := pricing.Quote(limitPrice, remainingQuantity, false)
+	if err != nil {
+		return domain.Order{}, orderengine.ErrInvalidOrder
+	}
+	if quote.AllInCost > s.orderEngine.MaxCashRisk() {
+		return domain.Order{}, orderengine.ErrCashRiskCap
+	}
+	request := exchange.AmendOrderRequest{OrderID: id, Ticker: target.Ticker, OutcomeSide: target.Side, Quantity: target.FilledQuantity + remainingQuantity, LimitPrice: limitPrice}
+	_ = s.store.Audit(ctx, "order_amend_requested", map[string]any{"order": target, "remaining_quantity": remainingQuantity, "limit_price": limitPrice})
+	amended, err := s.exchange.AmendOrder(ctx, request)
+	if err != nil {
+		_ = s.store.Audit(ctx, "order_amend_failed", map[string]any{"order": target, "error": err.Error()})
+		return domain.Order{}, err
+	}
+	if amended.ID == "" {
+		amended.ID = id
+	}
+	amended.Exchange, amended.Ticker, amended.Side = target.Exchange, target.Ticker, target.Side
+	amended.Rotation, amended.Game, amended.Outcome, amended.Market = target.Rotation, target.Game, target.Outcome, target.Market
+	amended.Quantity, amended.FilledQuantity, amended.LimitPrice, amended.CashRisk = request.Quantity, target.FilledQuantity, limitPrice, quote.AllInCost
+	if amended.Status == "" {
+		amended.Status = "resting"
+	}
+	if amended.CreatedAt.IsZero() {
+		amended.CreatedAt = target.CreatedAt
+	}
+	parent, managed := s.orderEngine.RecordManualAmend(id, amended, quote.AllInCost)
+	s.mu.Lock()
+	filtered := s.snapshot.Orders[:0]
+	for _, order := range s.snapshot.Orders {
+		if order.ID != id && order.ID != amended.ID {
+			filtered = append(filtered, order)
+		}
+	}
+	s.snapshot.Orders = append([]domain.Order{amended}, filtered...)
+	if managed {
+		s.upsertParentLocked(parent)
+	}
+	s.recalculateParentRiskLocked()
+	s.mu.Unlock()
+	if managed {
+		_ = s.store.SaveParentOrder(ctx, parent)
+		s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
+	}
+	_ = s.store.Audit(ctx, "order_amended", amended)
+	s.broadcast(domain.StreamEvent{Type: "order", Data: amended})
+	s.broadcastAccountSummary()
+	return amended, nil
 }
 
 func (s *Service) ResumeParentOrder(ctx context.Context, id string) (domain.ParentOrder, error) {

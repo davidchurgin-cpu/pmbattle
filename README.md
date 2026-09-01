@@ -98,6 +98,8 @@ Every active row in the Orders tray can be canceled individually. This includes 
 
 The Fills tray imports recent account-wide Kalshi fill history during every account reconciliation, including executions that occurred while PMBattle was stopped. Live and historical fills are deduplicated and the newest 250 remain visible.
 
+Positions show average entry American odds as raw exchange odds followed by fee-included odds derived from current exposure, contracts, and reported fees. Working basic and reconciled orders can be edited inline from the Orders tray by remaining quantity and cent limit; live edits require confirmation, use Kalshi V2 amend, and update immediately from the acknowledgement. Iceberg and follow children remain strategy-controlled.
+
 Create an API key in the matching Kalshi environment and store the private key on the server, outside this repository.
 
 ```text

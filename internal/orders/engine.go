@@ -697,6 +697,46 @@ func (e *Engine) ApplyOrder(order domain.Order) (domain.ParentOrder, bool) {
 	return domain.ParentOrder{}, false
 }
 
+// RecordManualAmend keeps a basic parent aligned with an exchange amendment.
+// Strategy-managed iceberg/follow children are intentionally excluded because
+// their quantities and prices are controlled by the strategy loop.
+func (e *Engine) RecordManualAmend(oldOrderID string, order domain.Order, reservedRisk domain.Money) (domain.ParentOrder, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for id, parent := range e.parents {
+		if parent.Strategy != "basic" || !contains(parent.ChildOrderIDs, oldOrderID) {
+			continue
+		}
+		index := childIndexByID(parent, oldOrderID)
+		if index < 0 {
+			continue
+		}
+		if order.ID == "" {
+			order.ID = oldOrderID
+		}
+		parent.Children[index].ID = order.ID
+		parent.Children[index].Quantity = order.Quantity
+		parent.Children[index].FilledQuantity = order.FilledQuantity
+		parent.Children[index].Status = order.Status
+		parent.Children[index].UpdatedAt = e.now()
+		if !contains(parent.ChildOrderIDs, order.ID) {
+			parent.ChildOrderIDs = append(parent.ChildOrderIDs, order.ID)
+		}
+		parent.Quantity = order.Quantity
+		parent.FilledQuantity = order.FilledQuantity
+		parent.LimitPrice = order.LimitPrice
+		parent.ReservedRisk = reservedRisk
+		parent.RemainingRisk = reservedRisk
+		parent.CashRiskTarget = parent.FilledRisk + reservedRisk
+		parent.Status = order.Status
+		parent.ReplaceCount++
+		parent.UpdatedAt = e.now()
+		e.parents[id] = parent
+		return cloneParent(parent), true
+	}
+	return domain.ParentOrder{}, false
+}
+
 func QuantityForCashRisk(price, cashRisk domain.Money) (domain.Money, domain.PriceQuote, error) {
 	if price <= 0 || price >= domain.Dollar || cashRisk <= 0 {
 		return 0, domain.PriceQuote{}, ErrInvalidOrder
