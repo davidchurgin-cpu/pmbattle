@@ -64,7 +64,10 @@
   const qty = (value: number) => (value / 10000).toLocaleString(undefined, { maximumFractionDigits: 2 })
   const ml = (value?: number) => value === undefined ? '—' : value > 0 ? `+${value}` : `${value}`
   const rawML = (price: number) => Math.round(price < 5000 ? 100 * (10000 - price) / price : -100 * price / (10000 - price))
-  const dateKey = (value: string) => new Date(value).toISOString().slice(0, 10)
+	const dateKey = (value: string | Date) => {
+		const date = value instanceof Date ? value : new Date(value)
+		return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+	}
   const time = (value: string) => new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
   const day = (value: string) => new Date(value).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })
   const updated = (value?: string) => value ? new Date(value).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' }) : 'Waiting'
@@ -211,8 +214,9 @@
 
   $: sports = ['ALL', ...new Set(snapshot.events.map(event => event.sport.toUpperCase()))]
   $: leagues = ['ALL', ...new Set(snapshot.events.filter(event => selectedSport === 'ALL' || event.sport.toUpperCase() === selectedSport).map(event => event.league.toUpperCase()))]
-  $: dates = ['ALL', ...new Set(snapshot.events.map(event => dateKey(event.startTime)))]
-  $: filtered = snapshot.events.filter(event => {
+	$: currentEvents = snapshot.events.filter(event => dateKey(event.startTime) >= dateKey(new Date()) || event.id === expandedEventID)
+	$: dates = ['ALL', ...new Set(currentEvents.map(event => dateKey(event.startTime)))]
+	$: filtered = currentEvents.filter(event => {
     const searchable = `${event.id} ${event.sport} ${event.league} ${event.participants.map(p => `${p.rotation} ${p.name} ${p.abbreviation}`).join(' ')}`.toLowerCase()
     return (!query || searchable.includes(query.toLowerCase())) && (selectedSport === 'ALL' || event.sport.toUpperCase() === selectedSport) && (selectedLeague === 'ALL' || event.league.toUpperCase() === selectedLeague) && (selectedDate === 'ALL' || dateKey(event.startTime) === selectedDate)
   })
