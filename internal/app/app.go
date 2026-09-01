@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strconv"
@@ -163,6 +165,8 @@ type CreateParentOrderInput struct {
 
 var ErrInvalidCancelScope = errors.New("invalid cancel scope")
 var ErrInsufficientAvailableBalance = errors.New("cash-risk target exceeds available bankroll")
+var ErrMappingReviewNotFound = errors.New("mapping review not found")
+var ErrInvalidMappingDecision = errors.New("mapping decision is not one of the reviewed schedule candidates")
 
 type CancelScopeInput struct {
 	Scope string `json:"scope"`
@@ -188,6 +192,11 @@ type AuditPage struct {
 	HasMore    bool                 `json:"hasMore"`
 }
 
+type MappingDecisionInput struct {
+	EventID string `json:"eventId,omitempty"`
+	Reject  bool   `json:"reject"`
+}
+
 func (s *Service) AuditHistory(ctx context.Context, beforeID int64, limit int) (AuditPage, error) {
 	if limit <= 0 {
 		limit = 100
@@ -208,6 +217,51 @@ func (s *Service) AuditHistory(ctx context.Context, beforeID int64, limit int) (
 		page.NextBefore = page.Records[len(page.Records)-1].ID
 	}
 	return page, nil
+}
+
+func (s *Service) MappingReviews(ctx context.Context, limit int) ([]domain.MappingReview, error) {
+	return s.store.LoadMappingReviews(ctx, limit)
+}
+
+func (s *Service) DecideMappingReview(ctx context.Context, id string, input MappingDecisionInput) (domain.MappingReview, error) {
+	review, ok, err := s.store.MappingReview(ctx, id)
+	if err != nil {
+		return domain.MappingReview{}, err
+	}
+	if !ok {
+		return domain.MappingReview{}, ErrMappingReviewNotFound
+	}
+	eventID, status := strings.TrimSpace(input.EventID), "manual_accepted"
+	if input.Reject {
+		eventID, status = "", "manual_rejected"
+	} else {
+		valid := false
+		for _, candidate := range review.Candidates {
+			if candidate.EventID == eventID {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return review, ErrInvalidMappingDecision
+		}
+	}
+	overrides := make([]domain.MappingOverride, 0, len(review.Tickers))
+	for _, ticker := range review.Tickers {
+		overrides = append(overrides, domain.MappingOverride{Exchange: review.Exchange, Ticker: ticker, EventID: eventID, Status: status})
+	}
+	if err := s.store.SaveMappingOverrides(ctx, overrides); err != nil {
+		return review, err
+	}
+	if err := s.store.DeleteMappingReview(ctx, id); err != nil {
+		return review, err
+	}
+	_ = s.store.Audit(ctx, "mapping_review_decided", map[string]any{"review": review, "event_id": eventID, "status": status})
+	select {
+	case s.restartExchange <- struct{}{}:
+	default:
+	}
+	return review, nil
 }
 
 func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrderInput) (domain.ParentOrder, error) {
@@ -744,11 +798,21 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 	}
 	slog.Info("market discovery complete", "schedule_events", len(events), "exchange_markets", len(markets))
 	matched := mapping.Match(events, markets)
+	overrides, overrideErr := s.store.LoadMappingOverrides(ctx, s.exchange.Name())
+	if overrideErr != nil {
+		slog.Warn("load manual mapping overrides", "error", overrideErr)
+	} else {
+		applyMappingOverrides(matched, overrides)
+	}
+	reviews := buildMappingReviews(events, matched, s.exchange.Name())
+	if err := s.store.ReplaceMappingReviews(ctx, s.exchange.Name(), reviews); err != nil {
+		slog.Warn("persist mapping review queue", "error", err)
+	}
 	accepted := 0
 	for _, market := range matched {
+		_ = s.store.SaveMapping(ctx, market)
 		if market.MappingStatus == "accepted" {
 			accepted++
-			_ = s.store.SaveMapping(ctx, market)
 		}
 	}
 	tickers := make([]string, 0)
@@ -756,7 +820,7 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 		tickers = s.attachMatched(matched)
 	}
 	s.setAvailableBooks(tickers)
-	slog.Info("market mapping complete", "accepted_markets", accepted, "available_books", len(tickers))
+	slog.Info("market mapping complete", "accepted_markets", accepted, "available_books", len(tickers), "review_groups", len(reviews))
 	s.reconcileAccount(ctx, false)
 	accountTicker := time.NewTicker(30 * time.Second)
 	defer accountTicker.Stop()
@@ -805,6 +869,79 @@ func (s *Service) exchangeLoop(ctx context.Context) {
 		s.reconcileAccount(ctx, true)
 		s.setExchangeHealth("reconnecting", 0)
 	}
+}
+
+func applyMappingOverrides(markets []domain.CanonicalMarket, overrides map[string]domain.MappingOverride) {
+	for i := range markets {
+		override, ok := overrides[markets[i].ExchangeTicker]
+		if !ok {
+			continue
+		}
+		switch override.Status {
+		case "manual_accepted":
+			markets[i].EventID = override.EventID
+			markets[i].MappingConfidence = 100
+			markets[i].MappingStatus = "accepted"
+		case "manual_rejected":
+			markets[i].EventID = ""
+			markets[i].MappingStatus = "rejected"
+		}
+	}
+}
+
+func buildMappingReviews(events []domain.CanonicalEvent, markets []domain.CanonicalMarket, fallbackExchange string) []domain.MappingReview {
+	type reviewGroup struct {
+		review  domain.MappingReview
+		market  domain.CanonicalMarket
+		types   map[domain.MarketType]bool
+		tickers map[string]bool
+	}
+	groups := make(map[string]*reviewGroup)
+	for _, market := range markets {
+		if market.MappingStatus != "review" {
+			continue
+		}
+		exchangeName := strings.ToLower(strings.TrimSpace(market.Exchange))
+		if exchangeName == "" {
+			exchangeName = strings.ToLower(fallbackExchange)
+		}
+		key := exchangeName + "\x00" + strings.TrimSpace(market.Title) + "\x00" + market.OccurrenceTime.UTC().Format(time.RFC3339Nano)
+		group := groups[key]
+		if group == nil {
+			sum := sha256.Sum256([]byte(key))
+			group = &reviewGroup{review: domain.MappingReview{ID: fmt.Sprintf("%x", sum[:12]), Exchange: exchangeName, Title: market.Title, OccurrenceTime: market.OccurrenceTime}, market: market, types: make(map[domain.MarketType]bool), tickers: make(map[string]bool)}
+			groups[key] = group
+		}
+		group.types[market.Type] = true
+		if market.ExchangeTicker != "" {
+			group.tickers[market.ExchangeTicker] = true
+		}
+	}
+	reviews := make([]domain.MappingReview, 0, len(groups))
+	for _, group := range groups {
+		group.review.Candidates = mapping.Candidates(events, group.market)
+		// Completely unrelated contracts stay hidden, but do not flood the
+		// human queue without any evidence-based schedule choice.
+		if len(group.review.Candidates) == 0 {
+			continue
+		}
+		for ticker := range group.tickers {
+			group.review.Tickers = append(group.review.Tickers, ticker)
+		}
+		for marketType := range group.types {
+			group.review.MarketTypes = append(group.review.MarketTypes, marketType)
+		}
+		sort.Strings(group.review.Tickers)
+		sort.Slice(group.review.MarketTypes, func(i, j int) bool { return group.review.MarketTypes[i] < group.review.MarketTypes[j] })
+		reviews = append(reviews, group.review)
+	}
+	sort.SliceStable(reviews, func(i, j int) bool {
+		if reviews[i].OccurrenceTime.Equal(reviews[j].OccurrenceTime) {
+			return reviews[i].Title < reviews[j].Title
+		}
+		return reviews[i].OccurrenceTime.Before(reviews[j].OccurrenceTime)
+	})
+	return reviews
 }
 
 func (s *Service) reconcileAccount(ctx context.Context, publish bool) {

@@ -14,6 +14,8 @@ export interface Position { exchange: string; ticker: string; eventId?: string; 
 export interface Settlement { exchange: string; ticker: string; eventTicker?: string; eventId?: string; rotation?: string; market?: string; result: string; yesQuantity: Money; noQuantity: Money; yesTotalCost: Money; noTotalCost: Money; revenue: Money; fee: Money; netPnl: Money; settlementValue: Money; settledAt: string }
 export interface AuditRecord { id: number; occurredAt: string; kind: string; payload: Record<string, unknown> }
 export interface AuditPage { records: AuditRecord[]; nextBefore?: number; hasMore: boolean }
+export interface MappingCandidate { eventId: string; sport: string; league: string; startTime: string; participants: Participant[]; score: number }
+export interface MappingReview { id: string; exchange: string; title: string; occurrenceTime?: string; tickers: string[]; marketTypes: string[]; candidates: MappingCandidate[]; updatedAt: string }
 export interface SportOption { name: string; eventCount: number; addedGameCount: number; enabled: boolean }
 export interface Settings { preferences: { enabledSports: string[] | null; excludeAddedGames: boolean }; availableSports: SportOption[] }
 export interface Snapshot { events: Event[]; parentOrders: ParentOrder[]; orders: Order[]; positions: Position[]; settlements: Settlement[]; fills: Fill[]; health: Health; bankroll: Money; availableToAllocate: Money; atRisk: Money; settings: Settings }

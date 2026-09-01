@@ -2,6 +2,7 @@ package mapping
 
 import (
 	"testing"
+	"time"
 
 	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
 )
@@ -12,6 +13,19 @@ func TestMatch(t *testing.T) {
 	matched := Match(events, markets)
 	if matched[0].EventID != "455" || matched[0].MappingStatus != "accepted" {
 		t.Fatalf("unexpected match %+v", matched[0])
+	}
+}
+
+func TestCandidatesRequireEvidenceAndNearbyTime(t *testing.T) {
+	start := time.Date(2026, 8, 31, 18, 0, 0, 0, time.UTC)
+	events := []domain.CanonicalEvent{
+		{ID: "near", StartTime: start, Participants: []domain.Participant{{Rotation: "451", Name: "Massachusetts"}, {Rotation: "452", Name: "Rutgers"}}},
+		{ID: "far", StartTime: start.Add(48 * time.Hour), Participants: []domain.Participant{{Name: "Massachusetts"}, {Name: "Rutgers"}}},
+		{ID: "other", StartTime: start, Participants: []domain.Participant{{Name: "Duke"}, {Name: "Virginia"}}},
+	}
+	candidates := Candidates(events, domain.CanonicalMarket{Title: "UMass vs Rutgers", OccurrenceTime: start})
+	if len(candidates) != 1 || candidates[0].EventID != "near" || candidates[0].Participants[0].Rotation != "451" {
+		t.Fatalf("unexpected review candidates %+v", candidates)
 	}
 }
 

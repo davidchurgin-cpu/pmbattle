@@ -70,6 +70,40 @@ func TestAuditEndpointIsBoundedAndCursorBased(t *testing.T) {
 	}
 }
 
+func TestMappingReviewEndpointsValidateCandidateAndPersistGroup(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "mapping-api.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	review := domain.MappingReview{ID: "group-1", Exchange: "kalshi", Title: "UMass vs Rutgers", Tickers: []string{"A", "B"}, Candidates: []domain.MappingCandidate{{EventID: "141", Score: 100}}}
+	if err := store.ReplaceMappingReviews(ctx, "kalshi", []domain.MappingReview{review}); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(app.New(app.Config{ExchangeEnvironment: "production"}, store, nil), nil).Handler()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/mapping-reviews?limit=10", nil))
+	var reviews []domain.MappingReview
+	if err := json.NewDecoder(response.Body).Decode(&reviews); err != nil || response.Code != http.StatusOK || len(reviews) != 1 {
+		t.Fatalf("unexpected review list: status=%d reviews=%+v err=%v", response.Code, reviews, err)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/mapping-reviews/group-1", bytes.NewBufferString(`{"eventId":"unrelated"}`)))
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid candidate status=%d body=%s", response.Code, response.Body.String())
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/mapping-reviews/group-1", bytes.NewBufferString(`{"eventId":"141"}`)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("valid candidate status=%d body=%s", response.Code, response.Body.String())
+	}
+	overrides, err := store.LoadMappingOverrides(ctx, "kalshi")
+	if err != nil || len(overrides) != 2 || overrides["A"].EventID != "141" || overrides["B"].Status != "manual_accepted" {
+		t.Fatalf("unexpected group overrides %+v err=%v", overrides, err)
+	}
+}
+
 func TestParentOrderEndpointIsLockedByDefault(t *testing.T) {
 	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/api/parent-orders", bytes.NewBufferString(`{"eventId":"1","ticker":"TEST","outcome":"Yes","market":"moneyline","side":"yes","strategy":"basic","policy":"limit","cashRisk":10000,"priceCapMoneyline":-107,"limitPrice":5000}`))

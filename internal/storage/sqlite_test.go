@@ -127,3 +127,34 @@ func TestAuditHistoryIsNewestFirstAndCursorBounded(t *testing.T) {
 		t.Fatalf("unexpected audit payload %s err=%v", second[0].Payload, err)
 	}
 }
+
+func TestMappingReviewsAndOverridesRoundTrip(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "mappings.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	review := domain.MappingReview{ID: "group-1", Exchange: "kalshi", Title: "UMass vs Rutgers", Tickers: []string{"A", "B"}, Candidates: []domain.MappingCandidate{{EventID: "141", Score: 100}}}
+	if err := store.ReplaceMappingReviews(ctx, "kalshi", []domain.MappingReview{review}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LoadMappingReviews(ctx, 10)
+	if err != nil || len(got) != 1 || got[0].Tickers[1] != "B" || got[0].UpdatedAt.IsZero() {
+		t.Fatalf("unexpected reviews %+v err=%v", got, err)
+	}
+	if err := store.SaveMappingOverrides(ctx, []domain.MappingOverride{{Exchange: "kalshi", Ticker: "A", EventID: "141", Status: "manual_accepted"}}); err != nil {
+		t.Fatal(err)
+	}
+	overrides, err := store.LoadMappingOverrides(ctx, "KALSHI")
+	if err != nil || overrides["A"].EventID != "141" || overrides["A"].UpdatedAt.IsZero() {
+		t.Fatalf("unexpected overrides %+v err=%v", overrides, err)
+	}
+	if err := store.ReplaceMappingReviews(ctx, "kalshi", nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = store.LoadMappingReviews(ctx, 10)
+	if len(got) != 0 {
+		t.Fatalf("review replacement did not clear queue: %+v", got)
+	}
+}

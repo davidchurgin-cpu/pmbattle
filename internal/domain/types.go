@@ -61,6 +61,34 @@ type CanonicalMarket struct {
 	MappingStatus     string     `json:"mappingStatus"`
 }
 
+type MappingCandidate struct {
+	EventID      string        `json:"eventId"`
+	Sport        string        `json:"sport"`
+	League       string        `json:"league"`
+	StartTime    time.Time     `json:"startTime"`
+	Participants []Participant `json:"participants"`
+	Score        int           `json:"score"`
+}
+
+type MappingReview struct {
+	ID             string             `json:"id"`
+	Exchange       string             `json:"exchange"`
+	Title          string             `json:"title"`
+	OccurrenceTime time.Time          `json:"occurrenceTime,omitempty"`
+	Tickers        []string           `json:"tickers"`
+	MarketTypes    []MarketType       `json:"marketTypes"`
+	Candidates     []MappingCandidate `json:"candidates"`
+	UpdatedAt      time.Time          `json:"updatedAt"`
+}
+
+type MappingOverride struct {
+	Exchange  string    `json:"exchange"`
+	Ticker    string    `json:"ticker"`
+	EventID   string    `json:"eventId,omitempty"`
+	Status    string    `json:"status"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
 type PriceQuote struct {
 	Exchange          string `json:"exchange"`
 	Ticker            string `json:"ticker"`

@@ -32,6 +32,8 @@ func (s *Store) init(ctx context.Context) error {
 		`PRAGMA busy_timeout=5000`,
 		`CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, payload BLOB NOT NULL, start_time TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS market_mappings (exchange TEXT NOT NULL, ticker TEXT NOT NULL, event_id TEXT NOT NULL, confidence INTEGER NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(exchange,ticker))`,
+		`CREATE TABLE IF NOT EXISTS mapping_reviews (id TEXT PRIMARY KEY, exchange TEXT NOT NULL, payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS mapping_overrides (exchange TEXT NOT NULL, ticker TEXT NOT NULL, event_id TEXT NOT NULL, status TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(exchange,ticker))`,
 		`CREATE TABLE IF NOT EXISTS audit_log (id INTEGER PRIMARY KEY AUTOINCREMENT, occurred_at TEXT NOT NULL, kind TEXT NOT NULL, payload BLOB NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS parent_orders (id TEXT PRIMARY KEY, status TEXT NOT NULL, payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
@@ -240,6 +242,127 @@ func (s *Store) LoadParentOrders(ctx context.Context) ([]domain.ParentOrder, err
 func (s *Store) SaveMapping(ctx context.Context, market domain.CanonicalMarket) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO market_mappings(exchange,ticker,event_id,confidence,status,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(exchange,ticker) DO UPDATE SET event_id=excluded.event_id,confidence=excluded.confidence,status=excluded.status,updated_at=excluded.updated_at`, market.Exchange, market.ExchangeTicker, market.EventID, market.MappingConfidence, market.MappingStatus, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
+}
+
+func (s *Store) ReplaceMappingReviews(ctx context.Context, exchange string, reviews []domain.MappingReview) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mapping_reviews WHERE lower(exchange)=lower(?)`, exchange); err != nil {
+		return err
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO mapping_reviews(id,exchange,payload,updated_at) VALUES(?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	now := time.Now().UTC()
+	for _, review := range reviews {
+		review.UpdatedAt = now
+		payload, err := json.Marshal(review)
+		if err != nil {
+			return err
+		}
+		if _, err := stmt.ExecContext(ctx, review.ID, review.Exchange, payload, now.Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) LoadMappingReviews(ctx context.Context, limit int) ([]domain.MappingReview, error) {
+	if limit <= 0 {
+		limit = 250
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM mapping_reviews ORDER BY updated_at DESC,id LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	reviews := make([]domain.MappingReview, 0)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var review domain.MappingReview
+		if err := json.Unmarshal(payload, &review); err != nil {
+			return nil, err
+		}
+		reviews = append(reviews, review)
+	}
+	return reviews, rows.Err()
+}
+
+func (s *Store) MappingReview(ctx context.Context, id string) (domain.MappingReview, bool, error) {
+	var payload []byte
+	err := s.db.QueryRowContext(ctx, `SELECT payload FROM mapping_reviews WHERE id=?`, id).Scan(&payload)
+	if err == sql.ErrNoRows {
+		return domain.MappingReview{}, false, nil
+	}
+	if err != nil {
+		return domain.MappingReview{}, false, err
+	}
+	var review domain.MappingReview
+	if err := json.Unmarshal(payload, &review); err != nil {
+		return domain.MappingReview{}, false, err
+	}
+	return review, true, nil
+}
+
+func (s *Store) DeleteMappingReview(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM mapping_reviews WHERE id=?`, id)
+	return err
+}
+
+func (s *Store) SaveMappingOverrides(ctx context.Context, overrides []domain.MappingOverride) error {
+	if len(overrides) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO mapping_overrides(exchange,ticker,event_id,status,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(exchange,ticker) DO UPDATE SET event_id=excluded.event_id,status=excluded.status,updated_at=excluded.updated_at`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	now := time.Now().UTC()
+	for _, override := range overrides {
+		if _, err := stmt.ExecContext(ctx, override.Exchange, override.Ticker, override.EventID, override.Status, now.Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) LoadMappingOverrides(ctx context.Context, exchange string) (map[string]domain.MappingOverride, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT exchange,ticker,event_id,status,updated_at FROM mapping_overrides WHERE lower(exchange)=lower(?)`, exchange)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	overrides := make(map[string]domain.MappingOverride)
+	for rows.Next() {
+		var override domain.MappingOverride
+		var updated string
+		if err := rows.Scan(&override.Exchange, &override.Ticker, &override.EventID, &override.Status, &updated); err != nil {
+			return nil, err
+		}
+		override.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
+		if err != nil {
+			return nil, fmt.Errorf("parse mapping override time: %w", err)
+		}
+		overrides[override.Ticker] = override
+	}
+	return overrides, rows.Err()
 }
 
 func (s *Store) SetSetting(ctx context.Context, key, value string) error {

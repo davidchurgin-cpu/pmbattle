@@ -17,32 +17,17 @@ func Match(events []domain.CanonicalEvent, markets []domain.CanonicalMarket) []d
 	result := make([]domain.CanonicalMarket, len(markets))
 	copy(result, markets)
 	for i := range result {
-		bestID, bestScore, bestCount := "", 0, 0
-		for _, event := range events {
-			score := matchupScore(event, result[i].Title)
-			if score > 0 && !result[i].OccurrenceTime.IsZero() && !event.StartTime.IsZero() {
-				difference := event.StartTime.Sub(result[i].OccurrenceTime)
-				if difference < 0 {
-					difference = -difference
-				}
-				if difference > 36*time.Hour {
-					score = 0
-				}
+		candidates := Candidates(events, result[i])
+		bestID, bestScore := "", 0
+		if len(candidates) > 0 {
+			bestScore = candidates[0].Score
+			if len(candidates) == 1 || candidates[1].Score < bestScore {
+				bestID = candidates[0].EventID
 			}
-			if score > bestScore {
-				bestScore = score
-				bestID = event.ID
-				bestCount = 1
-			} else if score > 0 && score == bestScore {
-				bestCount++
-			}
-		}
-		if bestCount != 1 {
-			bestID, bestScore = "", 0
 		}
 		result[i].EventID = bestID
 		result[i].MappingConfidence = bestScore
-		if result[i].MappingConfidence >= 75 {
+		if bestID != "" && result[i].MappingConfidence >= 75 {
 			result[i].MappingStatus = "accepted"
 		} else {
 			result[i].MappingStatus = "review"
@@ -50,6 +35,36 @@ func Match(events []domain.CanonicalEvent, markets []domain.CanonicalMarket) []d
 	}
 	sort.SliceStable(result, func(i, j int) bool { return result[i].MappingConfidence > result[j].MappingConfidence })
 	return result
+}
+
+// Candidates returns only schedule events with positive two-team evidence and
+// a compatible occurrence time. It is also the source of the manual-review
+// choices, so the UI cannot approve an arbitrary unrelated schedule event.
+func Candidates(events []domain.CanonicalEvent, market domain.CanonicalMarket) []domain.MappingCandidate {
+	candidates := make([]domain.MappingCandidate, 0)
+	for _, event := range events {
+		score := matchupScore(event, market.Title)
+		if score <= 0 {
+			continue
+		}
+		if !market.OccurrenceTime.IsZero() && !event.StartTime.IsZero() {
+			difference := event.StartTime.Sub(market.OccurrenceTime)
+			if difference < 0 {
+				difference = -difference
+			}
+			if difference > 36*time.Hour {
+				continue
+			}
+		}
+		candidates = append(candidates, domain.MappingCandidate{EventID: event.ID, Sport: event.Sport, League: event.League, StartTime: event.StartTime, Participants: append([]domain.Participant(nil), event.Participants...), Score: score})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].Score == candidates[j].Score {
+			return candidates[i].StartTime.Before(candidates[j].StartTime)
+		}
+		return candidates[i].Score > candidates[j].Score
+	})
+	return candidates
 }
 
 func matchupScore(event domain.CanonicalEvent, title string) int {

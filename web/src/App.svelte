@@ -1,12 +1,19 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import type { AccountSnapshot, AccountSummary, AuditPage, AuditRecord, BookLevel, Event, Fill, Health, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
+  import type { AccountSnapshot, AccountSummary, AuditPage, AuditRecord, BookLevel, Event, Fill, Health, MappingReview, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
 
   let snapshot: Snapshot = { events: [], parentOrders: [], orders: [], positions: [], settlements: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', accountState: 'pending', mappedMarkets: 0, latencyMs: 0, tradingEnabled: false }, bankroll: 0, availableToAllocate: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
   let view: 'schedule' | 'settings' = 'schedule'
   let draftSports: string[] = []
   let draftExcludeAddedGames = false
   let settingsStatus = ''
+  let mappingReviews: MappingReview[] = []
+  let mappingLoaded = false
+  let mappingLoading = false
+  let mappingError = ''
+  let mappingQuery = ''
+  let mappingSelections: Record<string, string> = {}
+  let mappingDeciding = ''
   let query = ''
   let selectedSport = 'ALL'
   let selectedLeague = 'ALL'
@@ -91,6 +98,7 @@
   $: slipQuote = slipPrice > 0 ? takerQuote({ price: slipPrice, quantity: slipQuantity }) : null
   $: workingOrders = snapshot.orders.filter(order => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((order.status || '').toLowerCase()))
   $: activeParents = snapshot.parentOrders.filter(parent => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((parent.status || '').toLowerCase()))
+  $: filteredMappingReviews = mappingReviews.filter(review => `${review.title} ${review.exchange} ${review.tickers.join(' ')} ${review.candidates.flatMap(candidate => candidate.participants.map(participant => `${participant.rotation} ${participant.name} ${participant.abbreviation}`)).join(' ')}`.toLowerCase().includes(mappingQuery.toLowerCase()))
 
   function normalizeSnapshot(value: Snapshot): Snapshot {
     return { ...value, events: value.events || [], parentOrders: value.parentOrders || [], orders: value.orders || [], positions: value.positions || [], settlements: value.settlements || [], fills: value.fills || [], availableToAllocate: value.availableToAllocate ?? value.bankroll ?? 0, settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
@@ -148,6 +156,35 @@
       if (!response.ok) throw new Error('Unable to save sports preferences')
       snapshot = normalizeSnapshot(await response.json()); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); selectedSport = 'ALL'; selectedLeague = 'ALL'; selectedDate = 'ALL'; settingsStatus = 'Saved'
     } catch (cause) { settingsStatus = cause instanceof Error ? cause.message : 'Unable to save settings' }
+  }
+  async function loadMappingReviews() {
+    if (mappingLoading) return
+    mappingLoading = true; mappingError = ''
+    try {
+      const response = await fetch('/api/mapping-reviews?limit=250')
+      if (!response.ok) throw new Error('Unable to load mapping reviews')
+      mappingReviews = await response.json() as MappingReview[]
+      mappingSelections = Object.fromEntries(mappingReviews.filter(review => review.candidates[0]).map(review => [review.id, review.candidates[0].eventId]))
+      mappingLoaded = true
+    } catch (cause) { mappingError = cause instanceof Error ? cause.message : 'Unable to load mapping reviews' }
+    finally { mappingLoading = false }
+  }
+  function candidateLabel(review: MappingReview, eventId: string) {
+    const candidate = review.candidates.find(value => value.eventId === eventId)
+    return candidate ? candidate.participants.map(participant => `${participant.rotation ? `#${participant.rotation} ` : ''}${participant.name}`).join(' at ') : 'this schedule game'
+  }
+  async function decideMapping(review: MappingReview, reject = false) {
+    const eventId = mappingSelections[review.id]
+    const action = reject ? 'reject this Kalshi market group' : `map this group to ${candidateLabel(review, eventId)}`
+    if (!confirm(`Confirm: ${action}? This changes only PMBattle's local mapping and never places an order.`)) return
+    mappingDeciding = review.id; mappingError = ''
+    try {
+      const response = await fetch(`/api/mapping-reviews/${encodeURIComponent(review.id)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reject ? { reject: true } : { eventId }) })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || 'Unable to save mapping decision')
+      mappingReviews = mappingReviews.filter(value => value.id !== review.id)
+    } catch (cause) { mappingError = cause instanceof Error ? cause.message : 'Unable to save mapping decision' }
+    finally { mappingDeciding = '' }
   }
   async function select(event: Event, quote?: PriceQuote, market?: MarketView) {
     if (!quote) return
@@ -414,6 +451,26 @@
         </div>
         <label class="preference-row"><input type="checkbox" bind:checked={draftExcludeAddedGames} /><span><b>Hide extra / added games</b><small>Exclude games with six-digit event IDs. These markets generally have lower limits.</small></span></label>
         <div class="settings-footer"><span aria-live="polite">{settingsStatus}</span><button class="save-settings" on:click={savePreferences}>Save preferences</button></div>
+      </section>
+      <section class="settings-section mapping-section">
+        <div class="settings-heading"><div><h2>Market mapping review</h2><p>Ambiguous Kalshi markets stay hidden and cannot be traded until you approve an evidence-backed schedule match.</p></div><button class="load-mappings" disabled={mappingLoading} on:click={loadMappingReviews}>{mappingLoading ? 'Loading…' : mappingLoaded ? 'Refresh queue' : 'Load review queue'}</button></div>
+        {#if mappingLoaded}
+          <div class="mapping-tools"><input aria-label="Search mapping reviews" bind:value={mappingQuery} placeholder="Search team, rotation or ticker" /><span>{filteredMappingReviews.length} group{filteredMappingReviews.length === 1 ? '' : 's'}</span></div>
+          <div class="mapping-list">
+            {#each filteredMappingReviews as review (review.id)}
+              <article class="mapping-card">
+                <header><span><b>{review.title}</b><small>{review.exchange.toUpperCase()} · {review.tickers.length} contract{review.tickers.length === 1 ? '' : 's'} · {review.marketTypes.join(', ')}</small></span>{#if review.occurrenceTime}<time>{day(review.occurrenceTime)} · {time(review.occurrenceTime)}</time>{/if}</header>
+                <div class="mapping-candidates">
+                  {#each review.candidates as candidate}
+                    <label><input type="radio" name={`mapping-${review.id}`} value={candidate.eventId} bind:group={mappingSelections[review.id]} /><span><b>{candidate.participants.map(participant => `${participant.rotation ? `#${participant.rotation} ` : ''}${participant.name}`).join(' at ')}</b><small>{candidate.sport} · {candidate.league} · {day(candidate.startTime)} {time(candidate.startTime)} · match {candidate.score}%</small></span></label>
+                  {/each}
+                </div>
+                <footer><button class="reject-mapping" disabled={mappingDeciding === review.id} on:click={() => decideMapping(review, true)}>Reject group</button><button class="accept-mapping" disabled={!mappingSelections[review.id] || mappingDeciding === review.id} on:click={() => decideMapping(review)}>{mappingDeciding === review.id ? 'Saving…' : 'Accept selected game'}</button></footer>
+              </article>
+            {:else}<div class="empty">No matching review groups found.</div>{/each}
+          </div>
+        {:else}<div class="mapping-intro">The queue is loaded only when requested, keeping the main schedule fast.</div>{/if}
+        {#if mappingError}<div class="error" role="alert">{mappingError}</div>{/if}
       </section>
     </main>
   {/if}

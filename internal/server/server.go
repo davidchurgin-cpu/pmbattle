@@ -33,6 +33,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/snapshot", s.snapshot)
 	mux.HandleFunc("GET /api/settings", s.settings)
 	mux.HandleFunc("GET /api/audit", s.audit)
+	mux.HandleFunc("GET /api/mapping-reviews", s.mappingReviews)
+	mux.HandleFunc("POST /api/mapping-reviews/{id}", s.decideMappingReview)
 	mux.HandleFunc("PUT /api/settings", s.updateSettings)
 	mux.HandleFunc("GET /api/books/{ticker}", s.book)
 	mux.HandleFunc("DELETE /api/books/{ticker}", s.releaseBook)
@@ -73,6 +75,43 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, page)
+}
+
+func (s *Server) mappingReviews(w http.ResponseWriter, r *http.Request) {
+	limit, err := parseNonnegativeInt64(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid mapping review limit"})
+		return
+	}
+	reviews, err := s.service.MappingReviews(r.Context(), int(limit))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to load mapping reviews"})
+		return
+	}
+	writeJSON(w, http.StatusOK, reviews)
+}
+
+func (s *Server) decideMappingReview(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var input app.MappingDecisionInput
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid mapping decision"})
+		return
+	}
+	review, err := s.service.DecideMappingReview(r.Context(), r.PathValue("id"), input)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, app.ErrMappingReviewNotFound) {
+			status = http.StatusNotFound
+		} else if errors.Is(err, app.ErrInvalidMappingDecision) {
+			status = http.StatusUnprocessableEntity
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, review)
 }
 
 func parseNonnegativeInt64(value string) (int64, error) {
