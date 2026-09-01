@@ -85,6 +85,7 @@ The mutation routes are present for demo validation but are inert by default. St
 - The shared-bankroll gate is process-local and currently covers the single Kalshi adapter. Cross-process or multi-exchange reservation requires the future routing coordinator and must not be inferred from this first-exchange guard.
 - Completed parents are retained in SQLite without pruning yet. A retention policy will be needed as history grows.
 - Open-position and settlement restart reconciliation has recorded multi-page fixture coverage and was smoke-tested read-only against production on August 31, 2026: 7 open positions, 5 resting orders, and 50 recent settlements rendered successfully. The displayed $62,989.94 cash at risk exactly matched position exposure plus resting-order risk; trading remained disabled.
+- The shared-bankroll/safety release was smoke-tested read-only against production on August 31, 2026: account state `READY`, 441 mapped markets, $213,074.64 available/new-order capacity, and $62,989.94 cash at risk rendered in Settings. The server and UI both reported `Production order entry is hard-locked`; no mutation endpoint was invoked.
 - Production mutation is intentionally impossible and must remain so unless a separate review is completed and the user explicitly authorizes real-money trading.
 - The schedule feed is HTTP. Deploy through the office server and monitor its freshness; do not infer a game state when the feed is unavailable.
 
