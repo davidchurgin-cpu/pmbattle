@@ -30,6 +30,7 @@ The production connection is deliberately **read-only**. The terminal includes t
 - A live Positions view for unsettled exposure and a separate History view for up to 500 recent settlements; settled markets never count as current cash at risk
 - Dashboard cash at risk includes authenticated open-position exposure plus resting-order risk, with the managed parent total used as a conservative fallback during feed timing gaps
 - One shared available-bankroll guard serializes parent submissions and reserves each parent's full future cash-risk target, including hidden iceberg slices; an insufficient request is rejected before any exchange call
+- Exchange-neutral smart-routing planner allocates one parent cash-risk target across venue balances and fee-included liquidity in best-price order, shares each venue's bankroll across its levels, and reports any safely unallocated remainder
 - Available cash, new-order capacity, and cash at risk update in the browser before a live fill notification is displayed
 - A compact Settings safety panel shows environment, exchange/account state, last reconciliation, mapped-market count, available trading balance, cash at risk, and the server-controlled order-entry lock
 - Always-visible dashboard order monitor with working quantities and recent fills, plus immediate visual alerts for every newly streamed full or partial fill
@@ -125,6 +126,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - The production API and exchange adapter cannot place, amend, or cancel orders. PMBattle must not send any real-money order action without the user's explicit permission at that time.
 - Demo order submission remains off unless `PMBATTLE_TRADING_ENABLED=true` is deliberately supplied with demo credentials. The engine rejects stale books, unknown mappings, invalid sides, requests above $20,000 cash risk, unsupported strategies, and prices beyond the fee-adjusted cap.
 - Parent creation is serialized under one server lock. The full parent target must fit available Kalshi cash after subtracting unexposed commitments already reserved for managed iceberg/follow parents; a rejected target never reaches the adapter.
+- The routing planner uses fixed-point cash risk, fee-included American moneylines, per-venue available cash, hidden commitments, liquidity capacity, freshness, and the hard parent price cap. It is execution-independent and cannot send an order.
 
 See [HANDOFF.md](HANDOFF.md) for architecture, operational details, known limitations, and the next implementation milestone.
 

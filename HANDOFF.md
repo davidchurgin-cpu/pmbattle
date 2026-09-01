@@ -13,6 +13,7 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 no
 - `internal/pricing` calculates current Kalshi maker/taker fees and fee-adjusted American moneylines using fixed-point money.
 - `internal/live` maintains sequence-checked in-memory order books.
 - `internal/orders` validates and sizes fee-inclusive parent orders, enforces the moneyline cap, links child orders, and owns demo iceberg, follow, and cancellation state.
+- `internal/routing` deterministically plans a single parent cash-risk target across exchange price levels using fee-included price, shared venue cash, hidden commitments, liquidity, freshness, and the hard all-in price cap. It does not execute orders.
 - `internal/storage` owns SQLite WAL tables for events, automatic mappings, manual overrides, grouped review payloads, durable parent orders, settlements, settings, and audit history.
 - `internal/app` coordinates polling, mapping, reconciliation, streaming, and the browser snapshot.
 - `internal/server` exposes JSON and WebSocket endpoints, with mutation handlers delegated to the demo-only service guard, and serves the embedded app.
@@ -73,6 +74,7 @@ The mutation routes are present for demo validation but are inert by default. St
 - Kalshi documents `balance` as cash currently available for trading; it is not total equity. The UI therefore labels it Available to trade. While the account WebSocket is connected, PMBattle refreshes balance, resting orders, positions, settlements, and managed fill recovery every 30 seconds in addition to startup/reconnect reconciliation.
 - Parent creation holds one process-wide submission lock. Before any exchange call, the full cash-risk target must fit the last authenticated available balance after subtracting unexposed commitments promised to active managed parents. On acknowledgement, the active child's reserved risk is immediately removed from local available cash; periodic REST reconciliation replaces that conservative estimate with Kalshi's authoritative value.
 - This shared guard treats an iceberg's hidden future slices and a follow parent's unexposed remaining target as committed bankroll. Concurrent HTTP requests cannot both pass against the same cash, and insufficient requests return before `PlaceOrder` is called.
+- The exchange-neutral routing planner is the first cross-exchange layer. It ranks eligible levels by fee-included implied probability, allocates without exceeding either venue cash or level liquidity, shares one venue's balance across all of its levels, and returns an explicit unallocated remainder when the target cannot be filled safely. Its fixture for a $5,000 target over three $2,000 venues produces $2,000 + $2,000 + $1,000 in best-price order.
 - The compact `account_summary` browser event carries authoritative available cash, allocatable new-order capacity, and cash at risk after every order/position/strategy transition. Fill processing publishes this summary before the fill alert, preserving the risk-before-UI invariant.
 - Account restart/reconnect reconciliation follows every `cursor` page for resting orders and nonzero, unsettled positions. Signed position quantities become explicit YES/NO sides, while exposure, traded amount, realized P&L, and fees remain fixed-point.
 - Settled markets come from Kalshi's separate paginated settlement endpoint. PMBattle uses a one-second overlap on incremental reads, upserts by exchange/ticker in SQLite, retains the 500 latest records in the browser snapshot, and shows revenue, fees, and net P&L in History. Settlements are deliberately excluded from current cash at risk.
@@ -88,7 +90,7 @@ The mutation routes are present for demo validation but are inert by default. St
 - Initial league-to-series routing covers the major US leagues plus selected top soccer leagues. Add aliases as new schedule leagues are enabled; unknown leagues intentionally load no Kalshi series.
 - The current general Kalshi fee rule is versioned in one module, but market-specific fee exceptions must be added before any production order preview.
 - Follow has automated coverage with a fake demo adapter and the current V2 amend contract, but it has not yet been manually exercised with separate Kalshi demo credentials. Production remains hard locked.
-- The shared-bankroll gate is process-local and currently covers the single Kalshi adapter. Cross-process or multi-exchange reservation requires the future routing coordinator and must not be inferred from this first-exchange guard.
+- The shared-bankroll gate is process-local and currently covers the single Kalshi adapter. The pure multi-exchange allocation planner is implemented and tested, but live routing still needs a second adapter plus the execution coordinator that creates children and resizes/cancels competing orders as fills arrive. Do not infer live smart routing from the planner alone.
 - Completed parents are retained in SQLite without pruning yet. A retention policy will be needed as history grows.
 - Audit records are append-only and paginated but do not yet have a retention/archive policy; server operators should include `pmbattle.db` in normal backups.
 - Open-position and settlement restart reconciliation has recorded multi-page fixture coverage and was smoke-tested read-only against production on August 31, 2026: 7 open positions, 5 resting orders, and 50 recent settlements rendered successfully. The displayed $62,989.94 cash at risk exactly matched position exposure plus resting-order risk; trading remained disabled.
@@ -103,6 +105,8 @@ The mutation routes are present for demo validation but are inert by default. St
 1. Validate basic, iceberg, follow, resume, and scoped-cancel flows manually with separate Kalshi demo credentials, without sending any production mutation.
 2. Compare demo fees, partial fills, reconnect recovery, and risk totals against Kalshi's own account display.
 3. Keep production blocked until those checks pass and the user explicitly authorizes a later real-money milestone.
+
+After a second exchange is selected, connect its normalized adapter to `internal/routing`, then add the fill-driven coordinator that reduces parent remaining risk before resizing or canceling competing venue children. Until then, the planner remains a tested, non-mutating foundation rather than an order path.
 
 ## Validation commands
 
