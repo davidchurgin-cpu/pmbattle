@@ -31,6 +31,7 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 no
 - `PUT /api/settings` — save enabled sports and refresh the schedule and exchange subscriptions
 - `POST /api/parent-orders` — create a cash-risk-bounded basic, iceberg, or follow order; returns `403` unless explicitly enabled in Kalshi demo mode
 - `DELETE /api/parent-orders/{id}` — cancel every child of a demo parent order; also locked outside demo mode
+- `POST /api/parent-orders/cancel` — cancel active managed parents by `all`, `event`, `strategy`, or `exchange`; returns `207` with per-parent failures after partial success
 - `GET /api/ws` — compact live events: `schedule`, `account_snapshot`, `health`, `ticker`, `orderbook`, `book_stale`, `fill`, `parent_order`, `order`, `position`, and `market_lifecycle`
 
 The mutation routes are present for demo validation but are inert by default. Startup refuses `PMBATTLE_TRADING_ENABLED=true` in simulated or production mode, and the Kalshi client separately refuses place, amend, and cancel calls unless configured for `demo`. No real-money mutation may be sent without the user's explicit permission at that time.
@@ -56,6 +57,7 @@ The mutation routes are present for demo validation but are inert by default. St
 - Follow creation ignores the browser's displayed price and reads the current synchronized server book. YES follows the highest YES bid; NO follows the complement of the lowest YES ask. Every child is post-only, so it cannot automatically cross the spread.
 - A follow amendment occurs only when the same-side top price changes, remains inside the hard fee-adjusted moneyline cap, and the 750 ms cooldown has elapsed. Repricing resizes the total/max-fillable count within remaining cash risk, rotates the client order ID, persists the decision, and publishes parent/order state before the new book reaches the browser.
 - A stale book changes the parent to `paused_stale` without mutating the exchange. A price beyond the cap changes it to `price_capped` while leaving the safer resting child in place. Fresh acceptable data resumes the parent; an exchange amend error changes it to `paused` for manual review.
+- The Orders tray exposes a compact demo kill switch for all managed parents, the currently expanded game, each strategy, or Kalshi. The control is absent while trading is locked. Scoped cancellation filters only nonterminal PMBattle parents, calls the normal parent cancellation path, and reports partial failures instead of rolling back acknowledged cancels.
 - Every fill carries its exchange order ID. The engine applies each fill ID once, updates filled quantity/risk, reduces the remaining reservation, persists the parent, and only then publishes the parent followed by the fill. Filled risk remains included in the station-wide cash-at-risk total.
 - Startup and account-stream reconnects query Kalshi fill history by PMBattle child order ID and replay it oldest-first. The initial `account_snapshot` refresh is quiet so recovered fills do not look like new live alerts.
 - The account snapshot also reads Kalshi's available balance in cents and converts it into PMBattle's four-decimal fixed-point bankroll without floating-point math.
@@ -78,10 +80,9 @@ The mutation routes are present for demo validation but are inert by default. St
 ## Next milestone: Kalshi demo trading
 
 1. Add REST position and settlement reconciliation with recorded fixtures.
-2. Add event, strategy, exchange, and global demo cancel controls.
-3. Add a deliberate resume control for follow parents paused after an amend error.
-4. Validate basic, iceberg, and follow flows manually with separate Kalshi demo credentials, without sending any production mutation.
-5. Keep production blocked until demo fees, partial fills, reconnect recovery, and risk totals match Kalshi reports and the user explicitly authorizes a later real-money milestone.
+2. Add a deliberate resume control for follow parents paused after an amend error.
+3. Validate basic, iceberg, follow, and scoped-cancel flows manually with separate Kalshi demo credentials, without sending any production mutation.
+4. Keep production blocked until demo fees, partial fills, reconnect recovery, and risk totals match Kalshi reports and the user explicitly authorizes a later real-money milestone.
 
 ## Validation commands
 

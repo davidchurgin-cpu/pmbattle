@@ -26,6 +26,9 @@
   let slipSlice = '25'
   let slipStatus = ''
   let cancelingParentID = ''
+  let cancelGroupScope = 'all'
+  let cancelingGroup = false
+  let cancelGroupStatus = ''
   let monitorOpen = false
   let unreadFills = 0
   let fillNotices: { key: string; fill: Fill }[] = []
@@ -79,6 +82,7 @@
   $: slipQuantity = slipPrice > 0 ? Math.max(10000, Math.floor((Number(slipRisk) || 0) * 100000000 / slipPrice)) : 10000
   $: slipQuote = slipPrice > 0 ? takerQuote({ price: slipPrice, quantity: slipQuantity }) : null
   $: workingOrders = snapshot.orders.filter(order => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((order.status || '').toLowerCase()))
+  $: activeParents = snapshot.parentOrders.filter(parent => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((parent.status || '').toLowerCase()))
 
   function normalizeSnapshot(value: Snapshot): Snapshot {
     return { ...value, events: value.events || [], parentOrders: value.parentOrders || [], orders: value.orders || [], positions: value.positions || [], fills: value.fills || [], settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
@@ -170,6 +174,30 @@
       slipStatus = cause instanceof Error ? cause.message : 'Unable to cancel demo order'
     } finally {
       cancelingParentID = ''
+    }
+  }
+  async function cancelGroup() {
+    if (!snapshot.health.tradingEnabled || cancelingGroup) return
+    let scope = cancelGroupScope
+    let value = ''
+    if (cancelGroupScope.includes(':')) [scope, value] = cancelGroupScope.split(':', 2)
+    if (scope === 'event') value = selectedEvent?.id || ''
+    if (scope === 'event' && !value) { cancelGroupStatus = 'Open a game before canceling its orders.'; return }
+    cancelingGroup = true
+    cancelGroupStatus = 'Canceling…'
+    try {
+      const response = await fetch('/api/parent-orders/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope, value }) })
+      const payload = await response.json()
+      if (!response.ok && response.status !== 207) throw new Error(payload.error || 'Unable to cancel managed orders')
+      const canceled = (payload.canceled || []) as ParentOrder[]
+      const byID = new Map(canceled.map(parent => [parent.id, parent]))
+      const canceledChildren = new Set(canceled.flatMap(parent => parent.childOrderIds))
+      snapshot = { ...snapshot, parentOrders: snapshot.parentOrders.map(parent => byID.get(parent.id) || parent), orders: snapshot.orders.map(order => canceledChildren.has(order.id) ? { ...order, status: 'canceled', cashRisk: 0 } : order) }
+      cancelGroupStatus = payload.failures?.length ? `${canceled.length} canceled · ${payload.failures.length} failed` : `${canceled.length} managed order${canceled.length === 1 ? '' : 's'} canceled`
+    } catch (cause) {
+      cancelGroupStatus = cause instanceof Error ? cause.message : 'Unable to cancel managed orders'
+    } finally {
+      cancelingGroup = false
     }
   }
   function applyStream(message: { type: string; data: unknown }) {
@@ -293,6 +321,7 @@
         <div class="table-head"><span>Time / market</span><span>Exchange</span><span>Quantity</span><span>Raw</span><span>All-in</span><span>Fee</span><span>Cash risk</span></div>
         {#each snapshot.fills as fill}<div class="table-row"><span><b>{new Date(fill.createdAt).toLocaleTimeString()} · #{fill.rotation}</b><small>{fill.team} {fill.market}</small></span><span>{fill.exchange}</span><span>{qty(fill.quantity)}</span><span>{money(fill.rawPrice)}</span><span>{ml(fill.allInMoneyline)}</span><span>{money(fill.fee)}</span><span>{money(fill.cashRisk)}</span></div>{:else}<div class="empty">No fills yet</div>{/each}
       {:else if trayTab === 'orders'}
+        {#if snapshot.health.tradingEnabled}<div class="cancel-scope-bar"><b>Demo kill switch</b><select bind:value={cancelGroupScope} aria-label="Cancel scope"><option value="all">All managed orders</option><option value="event" disabled={!selectedEvent}>Current game</option><option value="strategy:basic">Basic orders</option><option value="strategy:iceberg">Iceberg orders</option><option value="strategy:follow">Follow orders</option><option value="exchange:Kalshi">Kalshi managed orders</option></select><button disabled={cancelingGroup || activeParents.length === 0} on:click={cancelGroup}>{cancelingGroup ? 'Canceling…' : 'Cancel scope'}</button><small aria-live="polite">{cancelGroupStatus}</small></div>{/if}
         {#each snapshot.orders as order}<div class="table-row compact"><span><b>#{order.rotation} {order.market}</b><small>{order.ticker}</small></span><span>{order.exchange}</span><span>{qty(order.quantity)}</span><span>{money(order.limitPrice)}</span><span>{monitoredStatus(order)}</span><span>—</span><span class="order-risk">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
       {:else if trayTab === 'positions'}
         {#each snapshot.positions as position}<div class="table-row compact"><span><b>#{position.rotation} {position.market}</b><small>{position.ticker}</small></span><span>{position.exchange}</span><span>{qty(position.quantity)}</span><span>{money(position.averagePrice)}</span><span>{money(position.currentPrice)}</span><span>—</span><span>{money(position.unrealizedPnl)}</span></div>{:else}<div class="empty">No positions</div>{/each}

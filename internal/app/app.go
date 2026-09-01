@@ -147,6 +147,26 @@ type CreateParentOrderInput struct {
 	SliceQuantity     domain.Money
 }
 
+var ErrInvalidCancelScope = errors.New("invalid cancel scope")
+
+type CancelScopeInput struct {
+	Scope string `json:"scope"`
+	Value string `json:"value,omitempty"`
+}
+
+type CancelFailure struct {
+	ParentID string `json:"parentId"`
+	Error    string `json:"error"`
+}
+
+type CancelScopeResult struct {
+	Scope    string               `json:"scope"`
+	Value    string               `json:"value,omitempty"`
+	Matched  int                  `json:"matched"`
+	Canceled []domain.ParentOrder `json:"canceled"`
+	Failures []CancelFailure      `json:"failures"`
+}
+
 func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrderInput) (domain.ParentOrder, error) {
 	s.mu.RLock()
 	tradingEnabled := s.snapshot.Health.TradingEnabled
@@ -251,6 +271,75 @@ func (s *Service) CancelParentOrder(ctx context.Context, id string) (domain.Pare
 		s.queueBookRefresh()
 	}
 	return parent, nil
+}
+
+// CancelParentOrders applies the same guarded parent cancellation path to a
+// narrowly defined group. Each acknowledged parent is persisted and published
+// immediately; failures are returned explicitly instead of hiding partial work.
+func (s *Service) CancelParentOrders(ctx context.Context, input CancelScopeInput) (CancelScopeResult, error) {
+	if !s.Snapshot().Health.TradingEnabled {
+		return CancelScopeResult{}, orderengine.ErrDisabled
+	}
+	input.Scope = strings.ToLower(strings.TrimSpace(input.Scope))
+	input.Value = strings.TrimSpace(input.Value)
+	if !validCancelScope(input) {
+		return CancelScopeResult{}, ErrInvalidCancelScope
+	}
+	parents := s.orderEngine.List()
+	sort.Slice(parents, func(i, j int) bool {
+		if parents[i].CreatedAt.Equal(parents[j].CreatedAt) {
+			return parents[i].ID < parents[j].ID
+		}
+		return parents[i].CreatedAt.Before(parents[j].CreatedAt)
+	})
+	targets := make([]domain.ParentOrder, 0)
+	for _, parent := range parents {
+		if !parentOrderTerminal(parent.Status) && cancelScopeMatches(parent, input) {
+			targets = append(targets, parent)
+		}
+	}
+	result := CancelScopeResult{Scope: input.Scope, Value: input.Value, Matched: len(targets), Canceled: make([]domain.ParentOrder, 0, len(targets)), Failures: make([]CancelFailure, 0)}
+	_ = s.store.Audit(ctx, "parent_order_bulk_cancel_request", map[string]any{"scope": input, "matched": len(targets)})
+	for _, target := range targets {
+		parent, err := s.CancelParentOrder(ctx, target.ID)
+		if err != nil {
+			result.Failures = append(result.Failures, CancelFailure{ParentID: target.ID, Error: err.Error()})
+			continue
+		}
+		result.Canceled = append(result.Canceled, parent)
+	}
+	_ = s.store.Audit(ctx, "parent_order_bulk_cancel_result", result)
+	s.queueBookRefresh()
+	return result, nil
+}
+
+func validCancelScope(input CancelScopeInput) bool {
+	switch input.Scope {
+	case "all":
+		return input.Value == ""
+	case "event", "exchange":
+		return input.Value != ""
+	case "strategy":
+		value := strings.ToLower(input.Value)
+		return value == "basic" || value == "iceberg" || value == "follow"
+	default:
+		return false
+	}
+}
+
+func cancelScopeMatches(parent domain.ParentOrder, input CancelScopeInput) bool {
+	switch input.Scope {
+	case "all":
+		return true
+	case "event":
+		return parent.EventID == input.Value
+	case "strategy":
+		return strings.EqualFold(parent.Strategy, input.Value)
+	case "exchange":
+		return strings.EqualFold(parent.Exchange, input.Value)
+	default:
+		return false
+	}
 }
 
 func (s *Service) resolveOrderSelection(eventID, ticker, side string) (domain.CanonicalEvent, domain.PriceQuote, string, string, bool) {

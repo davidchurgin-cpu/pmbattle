@@ -35,6 +35,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/books/{ticker}", s.book)
 	mux.HandleFunc("DELETE /api/books/{ticker}", s.releaseBook)
 	mux.HandleFunc("POST /api/parent-orders", s.createParentOrder)
+	mux.HandleFunc("POST /api/parent-orders/cancel", s.cancelParentOrders)
 	mux.HandleFunc("DELETE /api/parent-orders/{id}", s.cancelParentOrder)
 	mux.HandleFunc("GET /api/ws", s.ws)
 	if s.static != nil {
@@ -136,6 +137,30 @@ func (s *Server) cancelParentOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, parent)
+}
+func (s *Server) cancelParentOrders(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10)
+	var input app.CancelScopeInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid cancel request"})
+		return
+	}
+	result, err := s.service.CancelParentOrders(r.Context(), input)
+	if err != nil {
+		status := http.StatusBadRequest
+		if errors.Is(err, orderengine.ErrDisabled) {
+			status = http.StatusForbidden
+		} else if !errors.Is(err, app.ErrInvalidCancelScope) {
+			status = http.StatusBadGateway
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	status := http.StatusOK
+	if len(result.Failures) > 0 {
+		status = http.StatusMultiStatus
+	}
+	writeJSON(w, status, result)
 }
 func (s *Server) ws(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)

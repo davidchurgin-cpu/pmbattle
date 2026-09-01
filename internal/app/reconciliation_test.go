@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
 	"github.com/davidchurgin-cpu/pmbattle/internal/exchange"
@@ -13,8 +15,10 @@ import (
 )
 
 type appFakeAdapter struct {
-	placed  []exchange.PlaceOrderRequest
-	amended []exchange.AmendOrderRequest
+	placed     []exchange.PlaceOrderRequest
+	amended    []exchange.AmendOrderRequest
+	canceled   []string
+	failCancel string
 }
 
 func (f *appFakeAdapter) Name() string { return "fake" }
@@ -42,7 +46,13 @@ func (f *appFakeAdapter) AmendOrder(_ context.Context, request exchange.AmendOrd
 	f.amended = append(f.amended, request)
 	return domain.Order{ID: request.OrderID, Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide, Status: "resting", Quantity: request.Quantity, LimitPrice: request.LimitPrice}, nil
 }
-func (f *appFakeAdapter) CancelOrder(context.Context, string) error { return nil }
+func (f *appFakeAdapter) CancelOrder(_ context.Context, id string) error {
+	f.canceled = append(f.canceled, id)
+	if id == f.failCancel {
+		return errors.New("cancel unavailable")
+	}
+	return nil
+}
 
 func TestFillReconcilesAndPersistsParentBeforeBrowserEvent(t *testing.T) {
 	store, err := storage.Open(filepath.Join(t.TempDir(), "reconcile.db"))
@@ -154,5 +164,41 @@ func TestFollowUsesServerBookAndRepricesBeforeBookPublication(t *testing.T) {
 	persisted, err := store.LoadParentOrders(context.Background())
 	if err != nil || len(persisted) != 1 || persisted[0].ReplaceCount != 1 {
 		t.Fatalf("follow parent was not persisted: %+v err=%v", persisted, err)
+	}
+}
+
+func TestScopedCancelMatchesManagedParentsAndReportsPartialFailures(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "bulk-cancel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter := &appFakeAdapter{failCancel: "child-2"}
+	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, adapter)
+	now := time.Date(2026, 8, 31, 21, 0, 0, 0, time.UTC)
+	parents := []domain.ParentOrder{
+		{ID: "parent-1", Exchange: "Kalshi", EventID: "event-1", Ticker: "TEST-1", Strategy: "follow", Status: "resting", CashRiskTarget: 100 * domain.Dollar, RemainingRisk: 100 * domain.Dollar, ReservedRisk: 50 * domain.Dollar, LimitPrice: 5000, Quantity: 100 * domain.Dollar, ChildOrderIDs: []string{"child-1"}, Children: []domain.ChildOrderState{{ID: "child-1", Status: "resting", Quantity: 100 * domain.Dollar}}, CreatedAt: now},
+		{ID: "parent-2", Exchange: "Kalshi", EventID: "event-1", Ticker: "TEST-2", Strategy: "iceberg", Status: "resting", CashRiskTarget: 100 * domain.Dollar, RemainingRisk: 100 * domain.Dollar, ReservedRisk: 50 * domain.Dollar, LimitPrice: 5000, Quantity: 100 * domain.Dollar, ChildOrderIDs: []string{"child-2"}, Children: []domain.ChildOrderState{{ID: "child-2", Status: "resting", Quantity: 100 * domain.Dollar}}, CreatedAt: now.Add(time.Second)},
+		{ID: "parent-3", Exchange: "Kalshi", EventID: "event-2", Ticker: "TEST-3", Strategy: "basic", Status: "resting", CashRiskTarget: 100 * domain.Dollar, RemainingRisk: 100 * domain.Dollar, ReservedRisk: 50 * domain.Dollar, LimitPrice: 5000, Quantity: 100 * domain.Dollar, ChildOrderIDs: []string{"child-3"}, Children: []domain.ChildOrderState{{ID: "child-3", Status: "resting", Quantity: 100 * domain.Dollar}}, CreatedAt: now.Add(2 * time.Second)},
+	}
+	service.orderEngine.Restore(parents)
+	service.snapshot.ParentOrders = parents
+	service.snapshot.Orders = []domain.Order{{ID: "child-1", Status: "resting"}, {ID: "child-2", Status: "resting"}, {ID: "child-3", Status: "resting"}}
+	result, err := service.CancelParentOrders(context.Background(), CancelScopeInput{Scope: "event", Value: "event-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Matched != 2 || len(result.Canceled) != 1 || result.Canceled[0].ID != "parent-1" || len(result.Failures) != 1 || result.Failures[0].ParentID != "parent-2" {
+		t.Fatalf("unexpected scoped cancel result %+v", result)
+	}
+	if len(adapter.canceled) != 2 || adapter.canceled[0] != "child-1" || adapter.canceled[1] != "child-2" {
+		t.Fatalf("wrong exchange cancellations %v", adapter.canceled)
+	}
+	snapshot := service.Snapshot()
+	if snapshot.ParentOrders[0].Status != "canceled" || snapshot.ParentOrders[1].Status == "canceled" || snapshot.ParentOrders[2].Status == "canceled" {
+		t.Fatalf("partial result was hidden in snapshot %+v", snapshot.ParentOrders)
+	}
+	if _, err := service.CancelParentOrders(context.Background(), CancelScopeInput{Scope: "strategy", Value: "unknown"}); !errors.Is(err, ErrInvalidCancelScope) {
+		t.Fatalf("invalid strategy got %v", err)
 	}
 }
