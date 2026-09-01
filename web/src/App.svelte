@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+	import { onMount, tick } from 'svelte'
   import type { AccountSnapshot, AccountSummary, AuditPage, AuditRecord, BookLevel, Event, Fill, Health, MappingReview, MarketOption, MarketView, Order, OrderBook, ParentOrder, Position, PriceQuote, Settings, Snapshot } from './types'
 
   let snapshot: Snapshot = { events: [], parentOrders: [], orders: [], positions: [], settlements: [], fills: [], health: { status: 'starting', mode: 'simulated', scheduleUpdated: '', exchangeState: 'disconnected', accountState: 'pending', mappedMarkets: 0, latencyMs: 0, tradingEnabled: false }, bankroll: 0, availableToAllocate: 0, atRisk: 0, settings: { preferences: { enabledSports: null, excludeAddedGames: false }, availableSports: [] } }
@@ -118,6 +118,31 @@
   type NamedRow = { game?: string; outcome?: string; market?: string; ticker: string }
   const rowGame = (row: NamedRow) => row.game || row.ticker
   const rowDetail = (row: NamedRow) => [row.outcome, row.market].filter(Boolean).join(' · ') || row.ticker
+	type MarketLinkedRow = NamedRow & { eventId?: string }
+	function tickerSelection(event: Event, ticker: string): { quote: PriceQuote; market: MarketView } | null {
+		for (const market of event.markets || []) {
+			for (const quote of [market.away, market.home, market.over, market.under]) if (quote?.ticker === ticker) return { quote, market }
+			for (const option of market.options || []) {
+				for (const quote of [option.away, option.home, option.over, option.under]) {
+					if (quote?.ticker === ticker) return { quote, market: { ...market, line: option.line, away: option.away, home: option.home, over: option.over, under: option.under } }
+				}
+			}
+		}
+		return null
+	}
+	async function openAccountMarket(row: MarketLinkedRow) {
+		const event = snapshot.events.find(candidate => candidate.id === row.eventId && tickerSelection(candidate, row.ticker)) || snapshot.events.find(candidate => tickerSelection(candidate, row.ticker))
+		if (!event) return
+		const selection = tickerSelection(event, row.ticker)
+		if (!selection) return
+		view = 'schedule'; query = ''; selectedSport = 'ALL'; selectedLeague = 'ALL'; selectedDate = 'ALL'; trayOpen = false
+		await select(event, selection.quote, selection.market)
+		await tick()
+		document.querySelector(`[data-event-id="${CSS.escape(event.id)}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+	}
+	function openAccountMarketKey(event: KeyboardEvent, row: MarketLinkedRow) {
+		if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openAccountMarket(row) }
+	}
   function fillName(fill: Fill) { return [fill.team, fill.market].filter(Boolean).join(' · ') || fill.ticker }
   function ago(value: string) {
     const at = new Date(value).getTime()
@@ -390,7 +415,7 @@
         {@const moneyline = event.markets?.find(market => market.type === 'moneyline')}
         {@const spreadMarket = event.markets?.find(market => market.type === 'spread')}
         {@const total = event.markets?.find(market => market.type === 'total')}
-        <div class="game-wrap" class:expanded={expandedEventID === event.id}>
+		<div class="game-wrap" class:expanded={expandedEventID === event.id} data-event-id={event.id}>
         <section class="game" class:selected={selectedEvent?.id === event.id} role="button" tabindex="0" on:click={() => toggleGame(event)} on:keydown={(key) => { if (key.key === 'Enter' || key.key === ' ') toggleGame(event) }}>
           <div class="rotations">{#each event.participants as participant}<b>{participant.rotation}</b>{/each}</div>
           <div class="teams">{#each event.participants as participant}<div><strong>{participant.name}</strong></div>{/each}</div>
@@ -452,10 +477,10 @@
       {:else if trayTab === 'orders'}
         {#if snapshot.health.tradingEnabled}<div class="cancel-scope-bar"><b>{snapshot.health.mode === 'live' ? 'Real-order kill switch' : 'Demo kill switch'}</b><select bind:value={cancelGroupScope} aria-label="Cancel scope"><option value="all">All managed orders</option><option value="event" disabled={!selectedEvent}>Current game</option><option value="strategy:basic">Basic orders</option><option value="strategy:iceberg">Iceberg orders</option><option value="strategy:follow">Follow orders</option><option value="exchange:Kalshi">Kalshi managed orders</option></select><button disabled={cancelingGroup || activeParents.length === 0} on:click={cancelGroup}>{cancelingGroup ? 'Canceling…' : 'Cancel scope'}</button><small aria-live="polite">{cancelGroupStatus}</small></div>{/if}
         <div class="table-head"><span>Game / bet</span><span>Exchange</span><span class="num">Quantity</span><span class="num">Limit</span><span>Status</span><span></span><span class="num">Cash risk</span></div>
-        {#each snapshot.orders as order}<div class="table-row compact" title={order.ticker}><span><b>{rowGame(order)}</b><small>{rowDetail(order)}</small></span><span>{order.exchange}</span><span class="num">{qty(order.quantity)}</span><span class="num">{money(order.limitPrice)}</span><span><i class="pill {orderStatus(order).tone}">{orderStatus(order).label}</i>{#if orderNote(order)}<small>{orderNote(order)}</small>{/if}</span><span></span><span class="order-risk num">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? 'Resuming…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
+		{#each snapshot.orders as order}<div class="table-row compact linked-row" role="button" tabindex="0" title={`Open ${rowGame(order)} · ${rowDetail(order)}`} aria-label={`Open market for ${rowGame(order)} ${rowDetail(order)}`} on:click={() => openAccountMarket(order)} on:keydown={(event) => openAccountMarketKey(event, order)}><span><b>{rowGame(order)}</b><small>{rowDetail(order)}</small></span><span>{order.exchange}</span><span class="num">{qty(order.quantity)}</span><span class="num">{money(order.limitPrice)}</span><span><i class="pill {orderStatus(order).tone}">{orderStatus(order).label}</i>{#if orderNote(order)}<small>{orderNote(order)}</small>{/if}</span><span></span><span class="order-risk num">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click|stopPropagation={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? 'Resuming…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click|stopPropagation={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
       {:else if trayTab === 'positions'}
         <div class="table-head"><span>Game / bet</span><span>Exchange</span><span class="num">Contracts</span><span class="num">Exposure</span><span class="num">Traded</span><span class="num">Fees</span><span class="num">Realized P&amp;L</span></div>
-        {#each snapshot.positions as position}<div class="table-row compact" title={position.ticker}><span><b>{rowGame(position)}</b><small>{rowDetail(position)}</small></span><span>{position.exchange}</span><span class="num">{qty(Math.abs(position.quantity))}</span><span class="num">{money(position.cashRisk)}</span><span class="num">{money(position.totalTraded || 0)}</span><span class="num">{money(position.feesPaid || 0)}</span><span class="num" class:positive={(position.realizedPnl || 0) >= 0} class:negative={(position.realizedPnl || 0) < 0}>{money(position.realizedPnl || 0)}</span></div>{:else}<div class="empty">No open positions</div>{/each}
+		{#each snapshot.positions as position}<div class="table-row compact linked-row" role="button" tabindex="0" title={`Open ${rowGame(position)} · ${rowDetail(position)}`} aria-label={`Open market for ${rowGame(position)} ${rowDetail(position)}`} on:click={() => openAccountMarket(position)} on:keydown={(event) => openAccountMarketKey(event, position)}><span><b>{rowGame(position)}</b><small>{rowDetail(position)}</small></span><span>{position.exchange}</span><span class="num">{qty(Math.abs(position.quantity))}</span><span class="num">{money(position.cashRisk)}</span><span class="num">{money(position.totalTraded || 0)}</span><span class="num">{money(position.feesPaid || 0)}</span><span class="num" class:positive={(position.realizedPnl || 0) >= 0} class:negative={(position.realizedPnl || 0) < 0}>{money(position.realizedPnl || 0)}</span></div>{:else}<div class="empty">No open positions</div>{/each}
       {:else}
         <div class="history-switch"><button class:active={historyMode === 'settlements'} on:click={() => showHistory('settlements')}>Settlements</button><button class:active={historyMode === 'audit'} on:click={() => showHistory('audit')}>System audit</button><span>{historyMode === 'audit' ? 'Loaded only when opened' : 'Exchange results'}</span></div>
         {#if historyMode === 'settlements'}
