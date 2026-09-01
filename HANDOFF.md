@@ -234,3 +234,8 @@ GitHub Actions runs these checks and publishes portable Windows/Linux binaries o
 - 94 Go tests, all against a fake exchange adapter; no test ever sends a real order mutation. The catalog-refresh certification test covers new listings, health/schedule publication order, unfiltered preference state, and removal of withdrawn markets. Production HTTP tests cover create, individual cancel, scoped cancel, and resume locks plus the request-header guard, same-origin streams, and security headers.
 - Statement coverage on September 1, 2026: app 56.9%, orders 73.4%, kalshi 52.9%, server 56.2%, storage 62.3%, mapping 88.8%. The next target remains 70% for app and server, through demo failure and reconnect cases.
 - Two tests are written to fail against the pre-fix code and should stay that way: `TestConcurrentWritersDoNotHitSQLiteBusy` (storage) and `TestQuantityForCashRiskUsesWholeHundredthsOfAContract` (orders). If either is ever loosened, the bug it guards can return silently.
+# 2026-09-01 live-order response compatibility
+
+- Kalshi Create Order V2 now returns a flat acknowledgement (`order_id`, `client_order_id`, `fill_count`, `remaining_count`, `ts_ms`). PMBattle now accepts that current shape while retaining support for the older nested `order` response.
+- Regression coverage is in `internal/kalshi/client_test.go`; the full Go test suite passes.
+- During discovery, a real Pittsburgh Pirates order at 63 cents was confirmed resting through account reconciliation even though the old parser showed an error. Do not assume a create-order parsing error means an order was rejected; always reconcile before retrying.

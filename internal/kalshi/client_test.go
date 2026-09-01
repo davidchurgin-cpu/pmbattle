@@ -82,6 +82,26 @@ func TestPlaceNoOrderUsesV2AskOnYesBook(t *testing.T) {
 	}
 }
 
+func TestPlaceOrderAcceptsFlatV2Acknowledgement(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"order_id":"order-flat","client_order_id":"client-flat","fill_count":"0.00","remaining_count":"15.47","ts_ms":1788303443634}`))
+	}))
+	defer server.Close()
+	client := &Client{cfg: Config{Environment: "production", KeyID: "key-id", TradingEnabled: true}, baseURL: server.URL, key: key, http: server.Client()}
+	order, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{Ticker: "TEST", OutcomeSide: "yes", Quantity: 154700, LimitPrice: 6300, TimeInForce: "good_till_canceled", ClientOrderID: "client-flat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if order.ID != "order-flat" || order.Status != "resting" || order.Quantity != 154700 || order.LimitPrice != 6300 {
+		t.Fatalf("unexpected flat V2 order %+v", order)
+	}
+}
+
 func TestAmendNoOrderUsesV2TotalCountAndYesBookAsk(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {

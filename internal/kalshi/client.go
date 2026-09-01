@@ -413,12 +413,27 @@ func (c *Client) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequ
 		SelfTradePreventionType: "taker_at_cross", PostOnly: request.PostOnly, CancelOrderOnPause: true,
 	}
 	var response struct {
-		Order rawOrder `json:"order"`
+		Order         rawOrder `json:"order"`
+		OrderID       string   `json:"order_id"`
+		ClientOrderID string   `json:"client_order_id"`
+		FillCount     string   `json:"fill_count"`
+		Remaining     string   `json:"remaining_count"`
+		TimestampMS   int64    `json:"ts_ms"`
 	}
 	if err := c.doJSON(ctx, http.MethodPost, "/portfolio/events/orders", payload, &response, http.StatusCreated, http.StatusOK); err != nil {
 		return domain.Order{}, err
 	}
-	order := normalizeOrder(response.Order)
+	// V2 returns acknowledgement fields at the top level. Keep accepting the
+	// former nested shape so older demo deployments remain compatible.
+	raw := response.Order
+	if raw.ID == "" && response.OrderID != "" {
+		raw = rawOrder{
+			ID: response.OrderID, Ticker: request.Ticker, Status: "resting", Side: bookSide,
+			Filled: response.FillCount, Remaining: response.Remaining, Initial: fixed.FormatCount(request.Quantity),
+			CreatedMS: response.TimestampMS,
+		}
+	}
+	order := normalizeOrder(raw)
 	if order.ID == "" {
 		return domain.Order{}, errors.New("kalshi create order response did not include an order id")
 	}

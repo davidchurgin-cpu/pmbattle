@@ -92,6 +92,8 @@ Set `PMBATTLE_DB=/app/data/pmbattle.db` when using the volume above.
 
 ## Kalshi configuration
 
+PMBattle uses Kalshi's V2 order endpoint and reconciles account orders after submission. If an order submission ever reports an ambiguous response, check the Orders tray or Kalshi directly before retrying so a live order is not duplicated.
+
 Create an API key in the matching Kalshi environment and store the private key on the server, outside this repository.
 
 ```text
