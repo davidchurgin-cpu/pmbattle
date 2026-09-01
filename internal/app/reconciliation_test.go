@@ -175,7 +175,7 @@ func TestParentCreationReservesOneSharedAvailableBankroll(t *testing.T) {
 	}
 	defer store.Close()
 	adapter := &appFakeAdapter{}
-	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, adapter)
+	service := New(Config{TradingEnabled: true, ExchangeEnvironment: "demo"}, store, adapter)
 	quote, err := pricing.Quote(5000, 100*domain.Dollar, false)
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestIcebergRefreshPublishesParentAndChildBeforeFill(t *testing.T) {
 	}
 	defer store.Close()
 	adapter := &appFakeAdapter{}
-	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, adapter)
+	service := New(Config{TradingEnabled: true, ExchangeEnvironment: "demo"}, store, adapter)
 	service.snapshot.Bankroll = 1_000 * domain.Dollar
 	quote, err := pricing.Quote(5000, 100*domain.Dollar, false)
 	if err != nil {
@@ -253,7 +253,7 @@ func TestFollowUsesServerBookAndRepricesBeforeBookPublication(t *testing.T) {
 	}
 	defer store.Close()
 	adapter := &appFakeAdapter{}
-	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, adapter)
+	service := New(Config{TradingEnabled: true, ExchangeEnvironment: "demo"}, store, adapter)
 	service.snapshot.Bankroll = 1_000 * domain.Dollar
 	quote, err := pricing.Quote(5000, 100*domain.Dollar, false)
 	if err != nil {
@@ -297,7 +297,7 @@ func TestScopedCancelMatchesManagedParentsAndReportsPartialFailures(t *testing.T
 	}
 	defer store.Close()
 	adapter := &appFakeAdapter{failCancel: "child-2"}
-	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, adapter)
+	service := New(Config{TradingEnabled: true, ExchangeEnvironment: "demo"}, store, adapter)
 	now := time.Date(2026, 8, 31, 21, 0, 0, 0, time.UTC)
 	parents := []domain.ParentOrder{
 		{ID: "parent-1", Exchange: "Kalshi", EventID: "event-1", Ticker: "TEST-1", Strategy: "follow", Status: "resting", CashRiskTarget: 100 * domain.Dollar, RemainingRisk: 100 * domain.Dollar, ReservedRisk: 50 * domain.Dollar, LimitPrice: 5000, Quantity: 100 * domain.Dollar, ChildOrderIDs: []string{"child-1"}, Children: []domain.ChildOrderState{{ID: "child-1", Status: "resting", Quantity: 100 * domain.Dollar}}, CreatedAt: now},
@@ -332,7 +332,7 @@ func TestResumeFollowRefusesStaleBookBeforeEngineStateChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	service := New(Config{DemoTrading: true, ExchangeEnvironment: "demo"}, store, &appFakeAdapter{})
+	service := New(Config{TradingEnabled: true, ExchangeEnvironment: "demo"}, store, &appFakeAdapter{})
 	parent := domain.ParentOrder{ID: "parent-1", Exchange: "Kalshi", EventID: "event-1", Ticker: "TEST", Side: "yes", Strategy: "follow", Status: "paused", CashRiskTarget: 100 * domain.Dollar, RemainingRisk: 100 * domain.Dollar, ReservedRisk: 50 * domain.Dollar, LimitPrice: 5000, Quantity: 100 * domain.Dollar, ChildOrderIDs: []string{"child-1"}, Children: []domain.ChildOrderState{{ID: "child-1", Status: "resting", Quantity: 100 * domain.Dollar}}}
 	service.orderEngine.Restore([]domain.ParentOrder{parent})
 	service.snapshot.ParentOrders = []domain.ParentOrder{parent}

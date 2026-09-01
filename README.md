@@ -2,7 +2,7 @@
 
 PMBattle is a fast, lightweight sportsbook-style terminal for prediction markets. It uses rotation numbers and the supplied sportsbook schedule as its event directory, then maps prediction-market contracts onto those games.
 
-The production connection is deliberately **read-only**. The terminal includes the live schedule, Kalshi market discovery and WebSocket plumbing, fee-adjusted American moneylines, live order books, fills, positions, orders, instant search, sport/date/league filters, and a compact light/dark interface. Disabled-by-default basic, iceberg, and controlled follow paths exist only for authenticated Kalshi demo testing; real-money order entry is blocked in both startup configuration and the exchange client.
+Order entry is disabled by default. The terminal includes the live schedule, Kalshi market discovery and WebSocket plumbing, fee-adjusted American moneylines, live order books, fills, positions, orders, instant search, sport/date/league filters, and a compact light/dark interface. Basic, iceberg, and controlled follow orders can be enabled for either Kalshi demo or production.
 
 ## What works now
 
@@ -19,10 +19,10 @@ The production connection is deliberately **read-only**. The terminal includes t
 - On-demand order-book subscriptions: PMBattle loads the selected market plus only the books required by active follow parents, releasing all other books
 - Clickable Yes/No bid and ask levels that populate a floating bottom order slip with the exact price, cash-at-risk field, fee-adjusted cap, and basic/iceberg/follow controls
 - Demo-only basic limit, post-only, IOC, and cancel commands sized from a parent cash-risk target with a hard fee-adjusted moneyline cap
-- Demo-only iceberg parents that expose one configurable slice, refresh only after the active slice is completely filled, and cancel only the currently working slice
-- Demo-only follow parents that join the live same-side top bid, stay post-only, never cross automatically, resize within cash risk, pause on stale data or the fee-adjusted cap, and throttle queue-losing amendments
-- Demo-only kill switch scoped to the current event, strategy, Kalshi-managed parents, or every managed parent; partial cancellation failures are reported individually
-- Manual demo-only Resume action for follow parents paused by an amend error; it requires a fresh synchronized book and reruns the fee cap and cash-risk checks before retrying
+- Iceberg parents that expose one configurable slice, refresh only after the active slice is completely filled, and cancel only the currently working slice
+- Follow parents that join the live same-side top bid, stay post-only, never cross automatically, resize within cash risk, pause on stale data or the fee-adjusted cap, and throttle queue-losing amendments
+- Kill switch scoped to the current event, strategy, Kalshi-managed parents, or every managed parent; partial cancellation failures are reported individually
+- Manual Resume action for follow parents paused by an amend error; it requires a fresh synchronized book and reruns the fee cap and cash-risk checks before retrying
 - Current Kalshi V2 amend requests use total/max-fillable count semantics and rotate the client order ID on every acknowledged reprice
 - Current Kalshi V2 fixed-point order requests, including correct NO-to-YES-book conversion and idempotent client order IDs
 - Durable parent orders that survive restart, deduplicate fills, and reduce remaining risk before fill notifications reach the browser
@@ -98,7 +98,7 @@ PMBATTLE_SIMULATED=false
 PMBATTLE_TRADING_ENABLED=false
 ```
 
-Demo and production credentials are different. Never commit private keys, `.env`, databases, or server secrets. `PMBATTLE_TRADING_ENABLED` defaults to `false`; if it is set to `true` outside authenticated, non-simulated Kalshi demo mode, PMBattle refuses to start. The Kalshi adapter independently rejects place, amend, and cancel mutations unless its configured environment is `demo`.
+Demo and production credentials are different. Never commit private keys, `.env`, databases, or server secrets. `PMBATTLE_TRADING_ENABLED` defaults to `false`. To test real orders manually, use production credentials with `PMBATTLE_KALSHI_ENV=production`, `PMBATTLE_SIMULATED=false`, and `PMBATTLE_TRADING_ENABLED=true`, then restart PMBattle. The interface clearly labels real-order mode and asks for confirmation before each production submission. The adapter still rejects mutations unless trading was enabled at startup.
 
 ### Using another PC
 
@@ -127,8 +127,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - Kalshi's `balance` is treated as available trading cash, not total account equity. Account orders, positions, settlements, and available cash are reconciled every 30 seconds while connected, as well as at startup and after reconnects.
 - Credentials never pass through the browser.
 - The server enforces same-origin browser WebSockets, a restrictive content security policy, MIME sniffing protection, referrer suppression, and frame denial.
-- The production API and exchange adapter cannot place, amend, or cancel orders. PMBattle must not send any real-money order action without the user's explicit permission at that time.
-- Demo order submission remains off unless `PMBATTLE_TRADING_ENABLED=true` is deliberately supplied with demo credentials. The engine rejects stale books, unknown mappings, invalid sides, requests above $20,000 cash risk, unsupported strategies, and prices beyond the fee-adjusted cap.
+- Order submission remains off unless `PMBATTLE_TRADING_ENABLED=true` is deliberately supplied with authenticated demo or production credentials. The engine rejects stale books, unknown mappings, invalid sides, requests above $20,000 cash risk, unsupported strategies, and prices beyond the fee-adjusted cap.
 - Parent creation is serialized under one server lock. The full parent target must fit available Kalshi cash after subtracting unexposed commitments already reserved for managed iceberg/follow parents; a rejected target never reaches the adapter.
 - The routing planner uses fixed-point cash risk, fee-included American moneylines, per-venue available cash, hidden commitments, liquidity capacity, freshness, and the hard parent price cap. It is execution-independent and cannot send an order.
 

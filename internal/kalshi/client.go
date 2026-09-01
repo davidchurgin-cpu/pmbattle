@@ -29,7 +29,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type Config struct{ Environment, KeyID, PrivateKeyPath string }
+type Config struct {
+	Environment, KeyID, PrivateKeyPath string
+	TradingEnabled                     bool
+}
 
 type Client struct {
 	cfg            Config
@@ -379,8 +382,8 @@ func (c *Client) Settlements(ctx context.Context, since time.Time) ([]domain.Set
 }
 
 func (c *Client) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequest) (domain.Order, error) {
-	if !strings.EqualFold(c.cfg.Environment, "demo") {
-		return domain.Order{}, errors.New("kalshi order mutation is locked outside the demo environment")
+	if !c.cfg.TradingEnabled || !tradingEnvironment(c.cfg.Environment) {
+		return domain.Order{}, errors.New("kalshi order mutation is disabled")
 	}
 	if c.key == nil || c.cfg.KeyID == "" {
 		return domain.Order{}, errors.New("kalshi order entry requires API credentials")
@@ -433,8 +436,8 @@ func (c *Client) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequ
 }
 
 func (c *Client) AmendOrder(ctx context.Context, request exchange.AmendOrderRequest) (domain.Order, error) {
-	if !strings.EqualFold(c.cfg.Environment, "demo") {
-		return domain.Order{}, errors.New("kalshi order mutation is locked outside the demo environment")
+	if !c.cfg.TradingEnabled || !tradingEnvironment(c.cfg.Environment) {
+		return domain.Order{}, errors.New("kalshi order mutation is disabled")
 	}
 	if c.key == nil || c.cfg.KeyID == "" {
 		return domain.Order{}, errors.New("kalshi order amendment requires API credentials")
@@ -493,13 +496,17 @@ func (c *Client) AmendOrder(ctx context.Context, request exchange.AmendOrderRequ
 }
 
 func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
-	if !strings.EqualFold(c.cfg.Environment, "demo") {
-		return errors.New("kalshi order mutation is locked outside the demo environment")
+	if !c.cfg.TradingEnabled || !tradingEnvironment(c.cfg.Environment) {
+		return errors.New("kalshi order mutation is disabled")
 	}
 	if strings.TrimSpace(orderID) == "" {
 		return errors.New("kalshi order id is required")
 	}
 	return c.doJSON(ctx, http.MethodDelete, "/portfolio/events/orders/"+url.PathEscape(orderID), nil, nil, http.StatusOK)
+}
+
+func tradingEnvironment(environment string) bool {
+	return strings.EqualFold(environment, "demo") || strings.EqualFold(environment, "production")
 }
 
 type rawOrder struct {

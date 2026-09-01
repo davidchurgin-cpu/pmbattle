@@ -29,7 +29,7 @@ type Config struct {
 	MarketInterval      time.Duration
 	ExchangeEnvironment string
 	Simulated           bool
-	DemoTrading         bool
+	TradingEnabled      bool
 }
 
 type Service struct {
@@ -53,14 +53,14 @@ type Service struct {
 }
 
 func New(cfg Config, store *storage.Store, adapter exchange.Adapter) *Service {
-	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, orderEngine: orderengine.New(cfg.DemoTrading, adapter), books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1), bookRequests: make(chan struct{}, 1), availableBooks: make(map[string]bool)}
+	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, orderEngine: orderengine.New(cfg.TradingEnabled, adapter), books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1), bookRequests: make(chan struct{}, 1), availableBooks: make(map[string]bool)}
 	mode := "live"
 	if cfg.Simulated {
 		mode = "simulated"
 	} else if strings.EqualFold(cfg.ExchangeEnvironment, "demo") {
 		mode = "demo"
 	}
-	s.snapshot.Health = domain.Health{Status: "starting", Mode: mode, ExchangeState: "disconnected", AccountState: "pending", TradingEnabled: cfg.DemoTrading, TradingLock: tradingLockReason(cfg, mode)}
+	s.snapshot.Health = domain.Health{Status: "starting", Mode: mode, ExchangeState: "disconnected", AccountState: "pending", TradingEnabled: cfg.TradingEnabled, TradingLock: tradingLockReason(cfg, mode)}
 	s.snapshot.ParentOrders = make([]domain.ParentOrder, 0)
 	return s
 }
@@ -355,11 +355,11 @@ func (s *Service) availableParentCashLocked() domain.Money {
 }
 
 func tradingLockReason(cfg Config, mode string) string {
-	if cfg.DemoTrading {
+	if cfg.TradingEnabled {
 		return ""
 	}
 	if strings.EqualFold(cfg.ExchangeEnvironment, "production") {
-		return "Production order entry is hard-locked."
+		return "Production order entry is off until enabled on the server."
 	}
 	if mode == "simulated" {
 		return "Simulated mode is read-only."

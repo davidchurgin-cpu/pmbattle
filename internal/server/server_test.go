@@ -15,7 +15,7 @@ import (
 	"github.com/davidchurgin-cpu/pmbattle/internal/storage"
 )
 
-func TestProductionHealthDeclaresHardTradingLock(t *testing.T) {
+func TestProductionHealthDeclaresTradingDisabledByDefault(t *testing.T) {
 	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
 	request := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	response := httptest.NewRecorder()
@@ -24,7 +24,7 @@ func TestProductionHealthDeclaresHardTradingLock(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != http.StatusOK || health.TradingEnabled || health.TradingLock != "Production order entry is hard-locked." {
+	if response.Code != http.StatusOK || health.TradingEnabled || health.TradingLock != "Production order entry is off until enabled on the server." {
 		t.Fatalf("unsafe production health response: status=%d health=%+v", response.Code, health)
 	}
 }
@@ -127,7 +127,7 @@ func TestBulkCancelEndpointIsLockedInProduction(t *testing.T) {
 }
 
 func TestBulkCancelEndpointRejectsUnknownScope(t *testing.T) {
-	service := app.New(app.Config{ExchangeEnvironment: "demo", DemoTrading: true}, nil, nil)
+	service := app.New(app.Config{ExchangeEnvironment: "demo", TradingEnabled: true}, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "/api/parent-orders/cancel", bytes.NewBufferString(`{"scope":"everything"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()

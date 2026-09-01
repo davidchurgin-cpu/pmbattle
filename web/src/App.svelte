@@ -212,7 +212,8 @@
   }
   function setBookSide(side: 'yes' | 'no') { bookSide = side; slipOpen = false }
   async function submitOrder() {
-    if (!snapshot.health.tradingEnabled) { slipStatus = 'Demo order entry is locked on this server.'; return }
+	if (!snapshot.health.tradingEnabled) { slipStatus = 'Order entry is locked on this server.'; return }
+	if (snapshot.health.mode === 'live' && !confirm(`Place a REAL Kalshi order for ${activeOutcome} with ${money(Math.round((Number(slipRisk) || 0) * 10000))} cash at risk?`)) return
     slipStatus = 'Submitting…'
     try {
       const response = await fetch('/api/parent-orders', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId: selectedEvent?.id, rotation: selectedEvent?.participants.find(participant => participant.name === selectedQuote?.outcome)?.rotation || '', ticker: selectedQuote?.ticker, outcome: activeOutcome, market: marketLabel(selectedMarket), side: bookSide, strategy: slipStrategy, policy: slipPolicy, cashRisk: Math.round((Number(slipRisk) || 0) * 10000), priceCapMoneyline: Number(slipCap), limitPrice: slipPrice, sliceQuantity: Math.round((Number(slipSlice) || 0) * 10000) }) })
@@ -250,10 +251,10 @@
     try {
       const response = await fetch(`/api/parent-orders/${encodeURIComponent(parent.id)}`, { method: 'DELETE' })
       const payload = await response.json()
-      if (!response.ok) throw new Error(payload.error || 'Unable to cancel demo order')
+		if (!response.ok) throw new Error(payload.error || 'Unable to cancel order')
       snapshot = { ...snapshot, parentOrders: [payload as ParentOrder, ...snapshot.parentOrders.filter(order => order.id !== parent.id)], orders: snapshot.orders.map(order => parent.childOrderIds.includes(order.id) ? { ...order, status: 'canceled', cashRisk: 0 } : order) }
     } catch (cause) {
-      slipStatus = cause instanceof Error ? cause.message : 'Unable to cancel demo order'
+		slipStatus = cause instanceof Error ? cause.message : 'Unable to cancel order'
     } finally {
       cancelingParentID = ''
     }
@@ -366,7 +367,7 @@
               <div class="top-quote"><b>{ml(activeMoneyline)}</b><small>fee included</small></div>
               <div class="book-state" class:stale={!book || book.stale}><i></i>{!book ? 'CONNECTING' : book.stale ? 'STALE' : 'LIVE'}</div>
             </header>
-            <nav class="trade-tabs"><button class:active={bookSide === 'yes'} on:click={() => setBookSide('yes')}>Trade Yes</button><button class:active={bookSide === 'no'} on:click={() => setBookSide('no')}>Trade No</button><span>{snapshot.health.tradingEnabled ? 'DEMO ORDERS' : 'READ-ONLY'}</span></nav>
+			<nav class="trade-tabs"><button class:active={bookSide === 'yes'} on:click={() => setBookSide('yes')}>Trade Yes</button><button class:active={bookSide === 'no'} on:click={() => setBookSide('no')}>Trade No</button><span>{snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'REAL ORDERS' : 'DEMO ORDERS' : 'READ-ONLY'}</span></nav>
             <div class="ladder-head"><span></span><span>Price <small>raw → fee included</small></span><span>Contracts</span><span>Total</span></div>
             {#if book && (displayAsks.length || displayBids.length)}
               <div class="ladder asks">
@@ -429,7 +430,7 @@
     <main class="settings-page">
       <header><h1>Settings</h1><p>Choose the sports PMBattle should load and subscribe to. Your choices are saved on this server.</p></header>
       <section class="settings-section safety-section">
-        <div class="settings-heading"><div><h2>Trading safety</h2><p>Server-controlled status. Preferences on this page cannot unlock order entry.</p></div><span class="safety-badge" class:armed={snapshot.health.tradingEnabled}>{snapshot.health.tradingEnabled ? 'DEMO ARMED' : 'READ-ONLY'}</span></div>
+		<div class="settings-heading"><div><h2>Trading status</h2><p>Order entry is controlled when the server starts.</p></div><span class="safety-badge" class:armed={snapshot.health.tradingEnabled}>{snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'LIVE TRADING' : 'DEMO TRADING' : 'READ-ONLY'}</span></div>
         <div class="safety-grid">
           <span><small>Environment</small><b>{snapshot.health.mode.toUpperCase()}</b></span>
           <span><small>Exchange feed</small><b>{snapshot.health.exchangeState.toUpperCase()}</b></span>
@@ -491,7 +492,7 @@
       </div>
       <div class="slip-summary"><span>Estimated contracts <b>{qty(slipQuantity)}</b></span><span>Fee-adjusted cap <b>{ml(Number(slipCap))}</b></span></div>
       {#if slipStrategy === 'follow'}<p class="slip-status">Joins the live top bid, stays post-only, and pauses at your all-in cap or on stale data.</p>{/if}
-      <button class="submit-order" disabled={!snapshot.health.tradingEnabled || !slipPrice || Number(slipRisk) <= 0} on:click={submitOrder}>{snapshot.health.tradingEnabled ? 'Place demo order' : 'Demo trading locked'}</button>
+	  <button class="submit-order" disabled={!snapshot.health.tradingEnabled || !slipPrice || Number(slipRisk) <= 0} on:click={submitOrder}>{snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'Review & place real order' : 'Place demo order' : 'Trading locked'}</button>
       {#if slipStatus}<p class="slip-status" aria-live="polite">{slipStatus}</p>{/if}
     </aside>
   {/if}

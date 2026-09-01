@@ -72,7 +72,7 @@ func TestPlaceNoOrderUsesV2AskOnYesBook(t *testing.T) {
 		_, _ = w.Write([]byte(`{"order":{"order_id":"order-1","ticker":"TEST","status":"resting","side":"no","no_price_dollars":"0.5600","initial_count_fp":"10.0000","remaining_count_fp":"10.0000"}}`))
 	}))
 	defer server.Close()
-	client := &Client{cfg: Config{Environment: "demo", KeyID: "key-id"}, baseURL: server.URL, key: key, http: server.Client()}
+	client := &Client{cfg: Config{Environment: "demo", KeyID: "key-id", TradingEnabled: true}, baseURL: server.URL, key: key, http: server.Client()}
 	order, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{Ticker: "TEST", OutcomeSide: "no", Quantity: 10 * domain.Dollar, LimitPrice: 5600, TimeInForce: "good_till_canceled", ClientOrderID: "client-1"})
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestAmendNoOrderUsesV2TotalCountAndYesBookAsk(t *testing.T) {
 		_, _ = w.Write([]byte(`{"order_id":"order-1","client_order_id":"client-2","remaining_count":"8.0000","fill_count":"0.0000","ts_ms":1788206400000}`))
 	}))
 	defer server.Close()
-	client := &Client{cfg: Config{Environment: "demo", KeyID: "key-id"}, baseURL: server.URL, key: key, http: server.Client()}
+	client := &Client{cfg: Config{Environment: "demo", KeyID: "key-id", TradingEnabled: true}, baseURL: server.URL, key: key, http: server.Client()}
 	order, err := client.AmendOrder(context.Background(), exchange.AmendOrderRequest{OrderID: "order-1", Ticker: "TEST", OutcomeSide: "no", Quantity: 10 * domain.Dollar, LimitPrice: 5600, ClientOrderID: "client-1", UpdatedClientOrderID: "client-2"})
 	if err != nil {
 		t.Fatal(err)

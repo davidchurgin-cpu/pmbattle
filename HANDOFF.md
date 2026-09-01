@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 now has guarded basic, iceberg, and controlled follow slices. Limit, post-only, IOC basic orders, limit/post-only icebergs, and post-only follow parents flow through one durable cash-at-risk model into Kalshi's V2 demo order API. Parent state survives restart and reconciles order-scoped fills, paginated open positions, and settled-market history before the browser receives account activity. Simulated mode and production connections remain read-only.
+Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 has basic, iceberg, and controlled follow orders. Limit, post-only, IOC basic orders, limit/post-only icebergs, and post-only follow parents flow through one durable cash-at-risk model into Kalshi's V2 order API. Parent state survives restart and reconciles order-scoped fills, paginated open positions, and settled-market history before the browser receives account activity. Order entry is disabled by default but can now be enabled for demo or production.
 
 ## Architecture
 
@@ -16,7 +16,7 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 no
 - `internal/routing` deterministically plans a single parent cash-risk target across exchange price levels using fee-included price, shared venue cash, hidden commitments, liquidity, freshness, and the hard all-in price cap. It does not execute orders.
 - `internal/storage` owns SQLite WAL tables for events, automatic mappings, manual overrides, grouped review payloads, durable parent orders, settlements, settings, and audit history.
 - `internal/app` coordinates polling, mapping, reconciliation, streaming, and the browser snapshot.
-- `internal/server` exposes JSON and WebSocket endpoints, with mutation handlers delegated to the demo-only service guard, and serves the embedded app.
+- `internal/server` exposes JSON and WebSocket endpoints, with mutation handlers delegated to the startup-controlled service guard, and serves the embedded app.
 - `web/src/App.svelte` contains the lightweight sportsbook board, instant search, filters, click-to-expand inline book ladder, and bottom activity tray.
 - `web/src/orderslip.css` isolates the small floating order-slip surface from the critical board styles.
 - `web/src/monitor.css` contains order-action and transient fill-alert styling; the unified fixed activity dock lives in the main board stylesheet.
@@ -33,13 +33,13 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 no
 - `GET /api/mapping-reviews?limit=250` — grouped ambiguous-market reviews, loaded only from Settings and capped at 500
 - `POST /api/mapping-reviews/{id}` — accept one listed schedule candidate with `{eventId}` or persistently reject the group with `{reject:true}`; this changes local mapping state only
 - `PUT /api/settings` — save enabled sports and refresh the schedule and exchange subscriptions
-- `POST /api/parent-orders` — create a cash-risk-bounded basic, iceberg, or follow order; returns `403` unless explicitly enabled in Kalshi demo mode
-- `DELETE /api/parent-orders/{id}` — cancel every child of a demo parent order; also locked outside demo mode
+- `POST /api/parent-orders` — create a cash-risk-bounded basic, iceberg, or follow order; returns `403` unless trading was explicitly enabled at startup
+- `DELETE /api/parent-orders/{id}` — cancel every child of a managed parent order; locked when server trading is disabled
 - `POST /api/parent-orders/cancel` — cancel active managed parents by `all`, `event`, `strategy`, or `exchange`; returns `207` with per-parent failures after partial success
-- `POST /api/parent-orders/{id}/resume` — manually resume an error-paused follow parent after fresh-book revalidation; locked outside demo mode
+- `POST /api/parent-orders/{id}/resume` — manually resume an error-paused follow parent after fresh-book revalidation; locked when server trading is disabled
 - `GET /api/ws` — compact live events: `schedule`, `account_snapshot` (including settlements), `health`, `ticker`, `orderbook`, `book_stale`, `fill`, `parent_order`, `order`, `position`, and `market_lifecycle`
 
-The mutation routes are present for demo validation but are inert by default. Startup refuses `PMBATTLE_TRADING_ENABLED=true` in simulated or production mode, and the Kalshi client separately refuses place, amend, and cancel calls unless configured for `demo`. No real-money mutation may be sent without the user's explicit permission at that time.
+Mutation routes are inert by default. Set `PMBATTLE_SIMULATED=false`, choose `PMBATTLE_KALSHI_ENV=demo` or `production`, and set `PMBATTLE_TRADING_ENABLED=true` to enable them. The Kalshi client receives the same startup flag and independently rejects place, amend, and cancel calls when it is off. Production submissions receive an explicit browser confirmation and are labeled `REAL ORDERS` / `LIVE TRADING`.
 
 ## Important operational details
 
@@ -70,8 +70,8 @@ The mutation routes are present for demo validation but are inert by default. St
 - Follow creation ignores the browser's displayed price and reads the current synchronized server book. YES follows the highest YES bid; NO follows the complement of the lowest YES ask. Every child is post-only, so it cannot automatically cross the spread.
 - A follow amendment occurs only when the same-side top price changes, remains inside the hard fee-adjusted moneyline cap, and the 750 ms cooldown has elapsed. Repricing resizes the total/max-fillable count within remaining cash risk, rotates the client order ID, persists the decision, and publishes parent/order state before the new book reaches the browser.
 - A stale book changes the parent to `paused_stale` without mutating the exchange. A price beyond the cap changes it to `price_capped` while leaving the safer resting child in place. Fresh acceptable data resumes the parent; an exchange amend error changes it to `paused` for manual review.
-- A generic `paused` follow never retries automatically. Its demo-only Resume control first confirms a synchronized book and an active nonterminal child, clears the amendment cooldown, and feeds the current book through the normal fee-cap and remaining-risk path. Canceled, filled, non-follow, missing-child, stale-book, and production resumes are rejected.
-- The Orders tray exposes a compact demo kill switch for all managed parents, the currently expanded game, each strategy, or Kalshi. The control is absent while trading is locked. Scoped cancellation filters only nonterminal PMBattle parents, calls the normal parent cancellation path, and reports partial failures instead of rolling back acknowledged cancels.
+- A generic `paused` follow never retries automatically. Resume first confirms a synchronized book and an active nonterminal child, clears the amendment cooldown, and feeds the current book through the normal fee-cap and remaining-risk path. Canceled, filled, non-follow, missing-child, and stale-book resumes are rejected.
+- The Orders tray exposes a compact kill switch for all managed parents, the currently expanded game, each strategy, or Kalshi. The control is absent while trading is locked. Scoped cancellation filters only nonterminal PMBattle parents, calls the normal parent cancellation path, and reports partial failures instead of rolling back acknowledged cancels.
 - Every fill carries its exchange order ID. The engine applies each fill ID once, updates filled quantity/risk, reduces the remaining reservation, persists the parent, and only then publishes the parent followed by the fill. Filled risk remains included in the station-wide cash-at-risk total.
 - Startup and account-stream reconnects query Kalshi fill history by PMBattle child order ID and replay it oldest-first. The initial `account_snapshot` refresh is quiet so recovered fills do not look like new live alerts.
 - The account snapshot also reads Kalshi's available balance in cents and converts it into PMBattle's four-decimal fixed-point bankroll without floating-point math.
@@ -102,14 +102,14 @@ The mutation routes are present for demo validation but are inert by default. St
 - The shared-bankroll/safety release was smoke-tested read-only against production on August 31, 2026: account state `READY`, 441 mapped markets, $213,074.64 available/new-order capacity, and $62,989.94 cash at risk rendered in Settings. The server and UI both reported `Production order entry is hard-locked`; no mutation endpoint was invoked.
 - On-demand System audit was smoke-tested read-only on August 31, 2026: the bounded API returned newest-first cursor metadata, the browser loaded 15 existing records only after the subview was opened, and Details rendered the exact stored fixed-point fill payload. Production remained hard-locked and no mutation endpoint was invoked.
 - Manual mapping review was smoke-tested read-only on August 31, 2026: 4,723 Kalshi contracts produced 2,240 confidently accepted mappings and zero current evidence-backed ambiguous groups. The on-demand API returned an empty list, Settings rendered the searchable `0 groups` empty state without browser errors, and the safety badge remained `READ-ONLY`. No accept/reject or exchange mutation endpoint was invoked.
-- Production mutation is intentionally impossible and must remain so unless a separate review is completed and the user explicitly authorizes real-money trading.
+- Production mutation is disabled by default and becomes available only when the server starts with production credentials, simulated mode off, and `PMBATTLE_TRADING_ENABLED=true`.
 - The schedule feed is HTTP. Deploy through the office server and monitor its freshness; do not infer a game state when the feed is unavailable.
 
-## Next milestone: Kalshi demo trading
+## Next milestone: manual Kalshi order validation
 
-1. Validate basic, iceberg, follow, resume, and scoped-cancel flows manually with separate Kalshi demo credentials, without sending any production mutation.
-2. Compare demo fees, partial fills, reconnect recovery, and risk totals against Kalshi's own account display.
-3. Keep production blocked until those checks pass and the user explicitly authorizes a later real-money milestone.
+1. Start with a small manually selected production order and verify the request, acknowledgement, open-order display, cancellation, and fill monitoring against Kalshi.
+2. Validate basic orders before testing iceberg or follow behavior; compare fees, partial fills, reconnect recovery, and risk totals against Kalshi's account display.
+3. Keep `PMBATTLE_TRADING_ENABLED=false` whenever manual testing is not actively underway.
 
 After a second exchange is selected, connect its normalized adapter to `internal/routing`, then add the fill-driven coordinator that reduces parent remaining risk before resizing or canceling competing venue children. Until then, the planner remains a tested, non-mutating foundation rather than an order path.
 

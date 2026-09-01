@@ -45,17 +45,21 @@ func main() {
 	simulated := strings.EqualFold(env("PMBATTLE_SIMULATED", "true"), "true")
 	kalshiEnvironment := env("PMBATTLE_KALSHI_ENV", "demo")
 	tradingRequested := strings.EqualFold(env("PMBATTLE_TRADING_ENABLED", "false"), "true")
-	if tradingRequested && (simulated || !strings.EqualFold(kalshiEnvironment, "demo")) {
-		slog.Error("refusing to enable order entry outside authenticated Kalshi demo mode")
+	if tradingRequested && simulated {
+		slog.Error("refusing to enable order entry in simulated mode")
 		os.Exit(1)
 	}
-	demoTrading := tradingRequested && !simulated && strings.EqualFold(kalshiEnvironment, "demo")
-	kalshiClient, err := kalshi.New(kalshi.Config{Environment: kalshiEnvironment, KeyID: os.Getenv("PMBATTLE_KALSHI_KEY_ID"), PrivateKeyPath: os.Getenv("PMBATTLE_KALSHI_PRIVATE_KEY_PATH")})
+	if tradingRequested && !strings.EqualFold(kalshiEnvironment, "demo") && !strings.EqualFold(kalshiEnvironment, "production") {
+		slog.Error("refusing to enable order entry for an unknown Kalshi environment")
+		os.Exit(1)
+	}
+	tradingEnabled := tradingRequested && !simulated
+	kalshiClient, err := kalshi.New(kalshi.Config{Environment: kalshiEnvironment, KeyID: os.Getenv("PMBATTLE_KALSHI_KEY_ID"), PrivateKeyPath: os.Getenv("PMBATTLE_KALSHI_PRIVATE_KEY_PATH"), TradingEnabled: tradingEnabled})
 	if err != nil {
 		slog.Error("configure Kalshi", "error", err)
 		os.Exit(1)
 	}
-	service := app.New(app.Config{ScheduleURL: env("PMBATTLE_SCHEDULE_URL", "http://linefeednew.spankodds.com/supportSystem/rawschedule_v2_expanded.xml"), ScheduleInterval: interval, MarketInterval: marketInterval, ExchangeEnvironment: kalshiEnvironment, Simulated: simulated, DemoTrading: demoTrading}, store, kalshiClient)
+	service := app.New(app.Config{ScheduleURL: env("PMBATTLE_SCHEDULE_URL", "http://linefeednew.spankodds.com/supportSystem/rawschedule_v2_expanded.xml"), ScheduleInterval: interval, MarketInterval: marketInterval, ExchangeEnvironment: kalshiEnvironment, Simulated: simulated, TradingEnabled: tradingEnabled}, store, kalshiClient)
 	static, _ := fs.Sub(webAssets, "web/dist")
 	httpServer := &http.Server{Addr: env("PMBATTLE_ADDR", ":8080"), Handler: server.New(service, static).Handler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go service.Run(ctx)
