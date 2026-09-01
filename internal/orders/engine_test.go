@@ -64,7 +64,7 @@ func TestCreateBasicOrderNeverExceedsCashRisk(t *testing.T) {
 	if child.ID != "child-1" || executor.placed[0].ClientOrderID != parent.ID {
 		t.Fatalf("parent/child linkage missing: parent=%+v child=%+v request=%+v", parent, child, executor.placed)
 	}
-	nextQuote, err := pricing.Quote(parent.LimitPrice, parent.Quantity+1, false)
+	nextQuote, err := pricing.Quote(parent.LimitPrice, parent.Quantity+domain.ContractStep, false)
 	if err != nil || nextQuote.AllInCost <= parent.CashRiskTarget {
 		t.Fatalf("quantity was not maximal: quantity=%d next=%+v err=%v", parent.Quantity, nextQuote, err)
 	}
@@ -445,5 +445,35 @@ func TestFollowTracksReplacementOrderIDAfterAmend(t *testing.T) {
 	}
 	if len(executor.canceled) != 1 || executor.canceled[0] != "order-replacement" {
 		t.Fatalf("cancel targeted %v, want the replacement order", executor.canceled)
+	}
+}
+
+func TestQuantityForCashRiskUsesWholeHundredthsOfAContract(t *testing.T) {
+	// A $2 target at 43 cents would size 4.3486 contracts at four decimals;
+	// Kalshi rejects anything finer than 0.01, so the engine must send 4.34.
+	quantity, quote, err := QuantityForCashRisk(4300, 2*domain.Dollar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quantity%domain.ContractStep != 0 {
+		t.Fatalf("quantity %d is not a whole 0.01 contract", quantity)
+	}
+	if quote.AllInCost > 2*domain.Dollar {
+		t.Fatalf("all-in cost %d exceeds the $2 target", quote.AllInCost)
+	}
+	next, err := pricing.Quote(4300, quantity+domain.ContractStep, false)
+	if err != nil || next.AllInCost <= 2*domain.Dollar {
+		t.Fatalf("one more 0.01 contract should have breached the target: quantity=%d next=%+v err=%v", quantity, next, err)
+	}
+	engine := New(true, &fakeExecutor{})
+	request := validRequest()
+	request.LimitPrice = 4300
+	request.CashRisk = 2 * domain.Dollar
+	parent, child, err := engine.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent.Quantity != quantity || child.Quantity%domain.ContractStep != 0 {
+		t.Fatalf("parent/child sizing drifted from the rounded quantity: parent=%d child=%d", parent.Quantity, child.Quantity)
 	}
 }

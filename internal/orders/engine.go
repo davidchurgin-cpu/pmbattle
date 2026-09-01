@@ -712,6 +712,9 @@ func QuantityForCashRisk(price, cashRisk domain.Money) (domain.Money, domain.Pri
 			high = mid - 1
 		}
 	}
+	// Kalshi accepts counts in whole 0.01-contract steps. Rounding down keeps
+	// the all-in cost at or under the cash-risk target.
+	low = low / domain.ContractStep * domain.ContractStep
 	if low == 0 {
 		return 0, domain.PriceQuote{}, ErrInvalidOrder
 	}

@@ -409,7 +409,7 @@ func (c *Client) PlaceOrder(ctx context.Context, request exchange.PlaceOrderRequ
 		CancelOrderOnPause      bool   `json:"cancel_order_on_pause"`
 	}{
 		Ticker: request.Ticker, ClientOrderID: request.ClientOrderID, Side: bookSide,
-		Count: fixed.Format(request.Quantity), Price: fixed.Format(price), TimeInForce: request.TimeInForce,
+		Count: fixed.FormatCount(request.Quantity), Price: fixed.Format(price), TimeInForce: request.TimeInForce,
 		SelfTradePreventionType: "taker_at_cross", PostOnly: request.PostOnly, CancelOrderOnPause: true,
 	}
 	var response struct {
@@ -463,7 +463,7 @@ func (c *Client) AmendOrder(ctx context.Context, request exchange.AmendOrderRequ
 		UpdatedClientOrderID string `json:"updated_client_order_id,omitempty"`
 		ExchangeIndex        int    `json:"exchange_index"`
 	}{
-		Ticker: request.Ticker, Side: bookSide, Price: fixed.Format(price), Count: fixed.Format(request.Quantity),
+		Ticker: request.Ticker, Side: bookSide, Price: fixed.Format(price), Count: fixed.FormatCount(request.Quantity),
 		ClientOrderID: request.ClientOrderID, UpdatedClientOrderID: request.UpdatedClientOrderID, ExchangeIndex: -1,
 	}
 	// Kalshi has documented two response shapes for amend: a flat

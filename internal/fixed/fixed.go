@@ -42,6 +42,30 @@ func Parse(value string) (domain.Money, error) {
 	return result, nil
 }
 
+// FloorToStep rounds a value down to a whole multiple of step.
+func FloorToStep(value, step domain.Money) domain.Money {
+	if step <= 0 {
+		return value
+	}
+	if value < 0 {
+		return -((-value + step - 1) / step * step)
+	}
+	return value / step * step
+}
+
+// FormatCount renders a contract count with the two decimal places Kalshi
+// requires for count fields, rounding down to a whole 0.01 contract first.
+// Prices keep four decimals and must use Format.
+func FormatCount(value domain.Money) string {
+	value = FloorToStep(value, domain.ContractStep)
+	sign := ""
+	if value < 0 {
+		sign = "-"
+		value = -value
+	}
+	return fmt.Sprintf("%s%d.%02d", sign, value/domain.Dollar, value%domain.Dollar/domain.ContractStep)
+}
+
 func Format(value domain.Money) string {
 	sign := ""
 	if value < 0 {

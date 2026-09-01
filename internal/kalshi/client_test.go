@@ -65,7 +65,7 @@ func TestPlaceNoOrderUsesV2AskOnYesBook(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if body["side"] != "ask" || body["price"] != "0.4400" || body["count"] != "10.0000" || body["time_in_force"] != "good_till_canceled" {
+		if body["side"] != "ask" || body["price"] != "0.4400" || body["count"] != "10.00" || body["time_in_force"] != "good_till_canceled" {
 			t.Fatalf("unexpected V2 body %#v", body)
 		}
 		w.WriteHeader(http.StatusCreated)
@@ -95,7 +95,7 @@ func TestAmendNoOrderUsesV2TotalCountAndYesBookAsk(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		if body["side"] != "ask" || body["price"] != "0.4400" || body["count"] != "10.0000" || body["client_order_id"] != "client-1" || body["updated_client_order_id"] != "client-2" || body["exchange_index"] != float64(-1) {
+		if body["side"] != "ask" || body["price"] != "0.4400" || body["count"] != "10.00" || body["client_order_id"] != "client-1" || body["updated_client_order_id"] != "client-2" || body["exchange_index"] != float64(-1) {
 			t.Fatalf("unexpected amend V2 body %#v", body)
 		}
 		_, _ = w.Write([]byte(`{"order_id":"order-1","client_order_id":"client-2","remaining_count":"8.0000","fill_count":"0.0000","ts_ms":1788206400000}`))
@@ -257,5 +257,32 @@ func TestAmendDecodesNestedOrderResponseWithReplacementID(t *testing.T) {
 	}
 	if order.ID != "order-2" || order.Status != "resting" || order.FilledQuantity != 2*domain.Dollar || order.Quantity != 10*domain.Dollar || order.LimitPrice != 5100 || order.Side != "yes" {
 		t.Fatalf("nested amend response decoded wrongly: %+v", order)
+	}
+}
+
+func TestPlaceOrderSendsTwoDecimalCountAndFourDecimalPrice(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{"order":{"order_id":"order-9","ticker":"TEST","status":"resting","side":"yes","yes_price_dollars":"0.4300","initial_count_fp":"4.34","remaining_count_fp":"4.34"}}`))
+	}))
+	defer server.Close()
+	client := &Client{cfg: Config{Environment: "production", KeyID: "key-id", TradingEnabled: true}, baseURL: server.URL, key: key, http: server.Client()}
+	// 4.34 contracts at $0.43: the count must carry exactly two decimals, the price four.
+	order, err := client.PlaceOrder(context.Background(), exchange.PlaceOrderRequest{Ticker: "TEST", OutcomeSide: "yes", Quantity: 43_400, LimitPrice: 4300, TimeInForce: "good_till_canceled", ClientOrderID: "client-9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["count"] != "4.34" || body["price"] != "0.4300" {
+		t.Fatalf("unexpected count/price formatting: count=%v price=%v", body["count"], body["price"])
+	}
+	if order.Quantity != 43_400 {
+		t.Fatalf("order quantity %d, want 43400", order.Quantity)
 	}
 }

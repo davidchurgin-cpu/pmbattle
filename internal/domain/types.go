@@ -9,6 +9,12 @@ type Money int64 // fixed-point ten-thousandths of a dollar
 
 const Dollar Money = 10_000
 
+// ContractStep is the smallest order size Kalshi accepts: 0.01 contract.
+// Contract counts share the four-decimal fixed-point scale, so one whole
+// contract is Dollar and one step is 100. Order quantities sent to the
+// exchange must be whole multiples of this step.
+const ContractStep Money = 100
+
 type Participant struct {
 	ID           string `json:"id"`
 	Rotation     string `json:"rotation"`
