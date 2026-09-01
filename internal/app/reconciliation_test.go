@@ -26,9 +26,19 @@ type appFakeAdapter struct {
 	settlements       []domain.Settlement
 	balance           domain.Money
 	beforeSnapshot    func()
+	labels            map[string]domain.MarketLabel
+	described         []string
 }
 
 func (f *appFakeAdapter) Name() string { return "fake" }
+func (f *appFakeAdapter) DescribeMarket(_ context.Context, ticker string) (domain.MarketLabel, error) {
+	f.described = append(f.described, ticker)
+	label, ok := f.labels[ticker]
+	if !ok {
+		return domain.MarketLabel{}, errors.New("market not found")
+	}
+	return label, nil
+}
 func (f *appFakeAdapter) ListMarkets(context.Context, []domain.CanonicalEvent) ([]domain.CanonicalMarket, error) {
 	f.marketCalls++
 	return append([]domain.CanonicalMarket(nil), f.markets...), nil
@@ -456,5 +466,70 @@ func TestInterruptedReconciliationKeepsPriorAccountStateAndStaysSilent(t *testin
 	}
 	if !sawSnapshot {
 		t.Fatal("fresh reconcile did not publish an account snapshot")
+	}
+}
+
+func TestAccountRowsAreNamedFromScheduleLabelsAndTicker(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "labels.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter := &appFakeAdapter{labels: map[string]domain.MarketLabel{
+		"KXNFLGAME-26SEP06DALPHI-PHI": {Ticker: "KXNFLGAME-26SEP06DALPHI-PHI", Title: "Dallas Cowboys at Philadelphia Eagles", YesOutcome: "Philadelphia Eagles", NoOutcome: "Dallas Cowboys", Type: domain.MarketMoneyline},
+	}}
+	service := New(Config{ExchangeEnvironment: "production"}, store, adapter)
+
+	// A game on the board: names come from the schedule, including rotations.
+	service.snapshot.Events = []domain.CanonicalEvent{{
+		ID: "301", Sport: "Football", League: "College Football",
+		Participants: []domain.Participant{{Rotation: "301", Name: "Clemson"}, {Rotation: "302", Name: "LSU"}},
+		Markets: []domain.MarketView{{Type: domain.MarketTotal, Line: "52.5",
+			Over:  &domain.PriceQuote{Ticker: "KXNCAAFTOTAL-26SEP05CLEMLSU-53", Outcome: "Over", Side: "yes"},
+			Under: &domain.PriceQuote{Ticker: "KXNCAAFTOTAL-26SEP05CLEMLSU-53", Outcome: "Under", Side: "no"}}},
+	}}
+
+	over := domain.Position{Ticker: "KXNCAAFTOTAL-26SEP05CLEMLSU-53", Side: "yes"}
+	service.enrichPositionLocked(&over)
+	if over.Game != "#301 Clemson at #302 LSU" || over.Outcome != "Over 52.5" || over.Market != "Total 52.5" {
+		t.Fatalf("schedule naming wrong: %+v", over)
+	}
+	// Over and Under share one ticker, so the side must pick the outcome.
+	under := domain.Position{Ticker: "KXNCAAFTOTAL-26SEP05CLEMLSU-53", Side: "no"}
+	service.enrichPositionLocked(&under)
+	if under.Outcome != "Under 52.5" {
+		t.Fatalf("no side named %q, want Under 52.5", under.Outcome)
+	}
+
+	// A market off the board: the stored label names it.
+	service.lookupMissingLabels(context.Background(), []string{"KXNFLGAME-26SEP06DALPHI-PHI"})
+	settled := domain.Settlement{Ticker: "KXNFLGAME-26SEP06DALPHI-PHI", YesQuantity: 5 * domain.Dollar}
+	service.enrichSettlementLocked(&settled)
+	if settled.Game != "Dallas Cowboys at Philadelphia Eagles" || settled.Outcome != "Philadelphia Eagles" {
+		t.Fatalf("label naming wrong: %+v", settled)
+	}
+	persisted, err := store.LoadMarketLabels(context.Background())
+	if err != nil || persisted["KXNFLGAME-26SEP06DALPHI-PHI"].Title == "" {
+		t.Fatalf("label was not persisted: %+v err=%v", persisted, err)
+	}
+
+	// Unknown market: decoded from the ticker, and never invents a line.
+	unknown := domain.Order{Ticker: "KXNCAAFTOTAL-26SEP05ECUALA-53", Side: "no"}
+	service.enrichOrderLocked(&unknown)
+	if unknown.Game != "College Football · Sep 5 · ECUALA" || unknown.Outcome != "Under" || unknown.Market != "Total" {
+		t.Fatalf("ticker fallback wrong: %+v", unknown)
+	}
+
+	// A failed lookup is not retried on the next pass.
+	service.lookupMissingLabels(context.Background(), []string{"KXNBAGAME-26SEP07LALBOS-LAL"})
+	service.lookupMissingLabels(context.Background(), []string{"KXNBAGAME-26SEP07LALBOS-LAL"})
+	attempts := 0
+	for _, ticker := range adapter.described {
+		if ticker == "KXNBAGAME-26SEP07LALBOS-LAL" {
+			attempts++
+		}
+	}
+	if attempts != 1 {
+		t.Fatalf("failed lookup was attempted %d times, want 1", attempts)
 	}
 }

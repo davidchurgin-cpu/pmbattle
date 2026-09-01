@@ -53,10 +53,14 @@ type Service struct {
 	bookRequests    chan struct{}
 	availableBooks  map[string]bool
 	activeBook      string
+	// labels name exchange markets whose game has left the board, so History
+	// and Positions stay readable. labelFailedAt throttles failed lookups.
+	labels        map[string]domain.MarketLabel
+	labelFailedAt map[string]time.Time
 }
 
 func New(cfg Config, store *storage.Store, adapter exchange.Adapter) *Service {
-	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, orderEngine: orderengine.New(cfg.TradingEnabled, adapter), books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1), bookRequests: make(chan struct{}, 1), availableBooks: make(map[string]bool)}
+	s := &Service{cfg: cfg, store: store, schedule: schedule.Client{URL: cfg.ScheduleURL}, exchange: adapter, orderEngine: orderengine.New(cfg.TradingEnabled, adapter), books: live.NewBooks(), subscribers: make(map[chan domain.StreamEvent]struct{}), restartExchange: make(chan struct{}, 1), bookRequests: make(chan struct{}, 1), availableBooks: make(map[string]bool), labels: make(map[string]domain.MarketLabel), labelFailedAt: make(map[string]time.Time)}
 	mode := "live"
 	if cfg.Simulated {
 		mode = "simulated"
@@ -82,15 +86,27 @@ func (s *Service) Run(ctx context.Context) {
 		s.recalculateParentRiskLocked()
 		s.mu.Unlock()
 	}
-	if settlements, err := s.store.LoadSettlements(ctx, 500); err != nil {
-		slog.Error("load settlement history", "error", err)
+	if labels, err := s.store.LoadMarketLabels(ctx); err != nil {
+		slog.Error("load market labels", "error", err)
 	} else {
 		s.mu.Lock()
-		s.snapshot.Settlements = settlements
+		s.labels = labels
 		s.mu.Unlock()
 	}
 	if cached, err := s.store.LoadEvents(ctx); err == nil && len(cached) > 0 {
 		s.setEvents(cached, false)
+	}
+	// Settlements load after events and labels so History is readable on the
+	// first paint rather than showing raw tickers until the next reconcile.
+	if settlements, err := s.store.LoadSettlements(ctx, 500); err != nil {
+		slog.Error("load settlement history", "error", err)
+	} else {
+		s.mu.Lock()
+		for i := range settlements {
+			s.enrichSettlementLocked(&settlements[i])
+		}
+		s.snapshot.Settlements = settlements
+		s.mu.Unlock()
 	}
 	s.refreshSchedule(ctx)
 	go s.scheduleLoop(ctx)
@@ -127,7 +143,7 @@ func (s *Service) UpdatePreferences(ctx context.Context, enabled []string, exclu
 	s.snapshot.Events = events
 	s.snapshot.Settings = buildSettings(s.allEvents, preferences)
 	if s.cfg.Simulated {
-		seedAccount(&s.snapshot)
+		s.seedAccountLocked()
 	}
 	snapshot := s.snapshot
 	s.mu.Unlock()
@@ -321,6 +337,7 @@ func (s *Service) CreateParentOrder(ctx context.Context, input CreateParentOrder
 	child.Market = parent.Market
 	s.mu.Lock()
 	s.snapshot.ParentOrders = append([]domain.ParentOrder{parent}, s.snapshot.ParentOrders...)
+	s.enrichOrderLocked(&child)
 	s.upsertOrderLocked(child)
 	s.snapshot.Bankroll -= parent.ReservedRisk
 	if s.snapshot.Bankroll < 0 {
@@ -770,7 +787,7 @@ func (s *Service) setEvents(events []domain.CanonicalEvent, publish bool) {
 	s.snapshot.Health.Status = "ok"
 	s.snapshot.Health.ScheduleUpdated = time.Now().UTC()
 	if s.cfg.Simulated {
-		seedAccount(&s.snapshot)
+		s.seedAccountLocked()
 	}
 	visible := append([]domain.CanonicalEvent(nil), s.snapshot.Events...)
 	s.mu.Unlock()
@@ -884,6 +901,7 @@ func (s *Service) refreshExchangeMarkets(ctx context.Context, publish bool) {
 		return
 	}
 	slog.Info("market discovery complete", "schedule_events", len(events), "exchange_markets", len(markets))
+	s.rememberLabels(ctx, markets)
 	matched := mapping.Match(events, markets)
 	overrides, overrideErr := s.store.LoadMappingOverrides(ctx, s.exchange.Name())
 	if overrideErr != nil {
@@ -1028,6 +1046,10 @@ func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
 		slog.Warn("account reconciliation failed", "error", err)
 		accountOK = false
 	} else {
+		s.lookupMissingLabels(ctx, accountTickers(orders, positions, nil, fills))
+		if interrupted() {
+			return
+		}
 		reconciledParents := make([]domain.ParentOrder, 0)
 		for _, order := range orders {
 			if parent, ok := s.orderEngine.ApplyOrder(order); ok {
@@ -1037,6 +1059,9 @@ func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
 		s.mu.Lock()
 		for i := range positions {
 			s.enrichPositionLocked(&positions[i])
+		}
+		for i := range orders {
+			s.enrichOrderLocked(&orders[i])
 		}
 		s.snapshot.Orders = orders
 		s.snapshot.Positions = positions
@@ -1091,11 +1116,6 @@ func (s *Service) reconcileSettlements(ctx context.Context) {
 		slog.Warn("settlement reconciliation failed", "error", err)
 		return
 	}
-	s.mu.RLock()
-	for i := range settlements {
-		s.enrichSettlementLocked(&settlements[i])
-	}
-	s.mu.RUnlock()
 	if err := s.store.SaveSettlements(ctx, settlements); err != nil {
 		slog.Warn("settlement persistence failed", "error", err)
 		return
@@ -1105,51 +1125,45 @@ func (s *Service) reconcileSettlements(ctx context.Context) {
 		slog.Warn("settlement history load failed", "error", err)
 		return
 	}
+	// Name the whole history, so rows stored before names existed become
+	// readable too.
+	s.lookupMissingLabels(ctx, accountTickers(nil, nil, history, nil))
 	s.mu.Lock()
+	for i := range history {
+		s.enrichSettlementLocked(&history[i])
+	}
 	s.snapshot.Settlements = history
 	s.mu.Unlock()
 }
 
 func (s *Service) enrichPositionLocked(position *domain.Position) {
-	event, market, quote, ok := findQuote(s.snapshot.Events, position.Ticker)
-	if !ok {
-		return
+	d := s.describeLocked(position.Ticker, position.Side)
+	position.Game, position.Outcome, position.Rotation = d.Game, d.Outcome, d.Rotation
+	if d.EventID != "" {
+		position.EventID = d.EventID
 	}
-	position.EventID = event.ID
-	position.Market = marketName(market)
-	position.Rotation = rotationForOutcome(event, quote.Outcome)
+	position.Market = d.Market
+	if position.Market == "" {
+		position.Market = position.Ticker
+	}
 }
 
+// enrichSettlementLocked names a settled market. The settled side is unknown
+// from the payload alone, so the yes/no counts decide which outcome to show.
 func (s *Service) enrichSettlementLocked(settlement *domain.Settlement) {
-	event, market, quote, ok := findQuote(s.snapshot.Events, settlement.Ticker)
-	if !ok {
-		return
+	side := "yes"
+	if settlement.NoQuantity > settlement.YesQuantity {
+		side = "no"
 	}
-	settlement.EventID = event.ID
-	settlement.Market = marketName(market)
-	settlement.Rotation = rotationForOutcome(event, quote.Outcome)
-}
-
-func findQuote(events []domain.CanonicalEvent, ticker string) (domain.CanonicalEvent, domain.MarketView, domain.PriceQuote, bool) {
-	for _, event := range events {
-		for _, market := range event.Markets {
-			type candidate struct {
-				quote *domain.PriceQuote
-				line  string
-			}
-			quotes := []candidate{{market.Away, market.Line}, {market.Home, market.Line}, {market.Over, market.Line}, {market.Under, market.Line}}
-			for _, option := range market.Options {
-				quotes = append(quotes, candidate{option.Away, option.Line}, candidate{option.Home, option.Line}, candidate{option.Over, option.Line}, candidate{option.Under, option.Line})
-			}
-			for _, candidate := range quotes {
-				if candidate.quote != nil && candidate.quote.Ticker == ticker {
-					market.Line = candidate.line
-					return event, market, *candidate.quote, true
-				}
-			}
-		}
+	d := s.describeLocked(settlement.Ticker, side)
+	settlement.Game, settlement.Outcome, settlement.Rotation = d.Game, d.Outcome, d.Rotation
+	if d.EventID != "" {
+		settlement.EventID = d.EventID
 	}
-	return domain.CanonicalEvent{}, domain.MarketView{}, domain.PriceQuote{}, false
+	settlement.Market = d.Market
+	if settlement.Market == "" {
+		settlement.Market = settlement.Ticker
+	}
 }
 
 func marketName(market domain.MarketView) string {
@@ -1407,6 +1421,7 @@ func (s *Service) handleExchangeEvent(event domain.StreamEvent) {
 		if order, ok := event.Data.(domain.Order); ok {
 			parent, parentMatched := s.orderEngine.ApplyOrder(order)
 			s.mu.Lock()
+			s.enrichOrderLocked(&order)
 			s.upsertOrderLocked(order)
 			if parentMatched {
 				s.upsertParentLocked(parent)
@@ -1460,6 +1475,7 @@ func (s *Service) publishFollowResults(results []orderengine.FollowResult, bookS
 		s.mu.Lock()
 		s.upsertParentLocked(result.Parent)
 		if result.Order != nil {
+			s.enrichOrderLocked(result.Order)
 			s.upsertOrderLocked(*result.Order)
 		}
 		s.recalculateParentRiskLocked()
@@ -1531,12 +1547,15 @@ func (s *Service) applyFill(fill domain.Fill, publish bool) bool {
 		fill.Team = parent.Outcome
 		fill.Market = parent.Market
 	}
+	s.mu.RLock()
+	s.enrichFillLocked(&fill)
+	s.mu.RUnlock()
 	if reconciled {
+		s.mu.Lock()
 		if refreshedChild != nil {
 			refreshedChild.Rotation = parent.Rotation
-			refreshedChild.Market = parent.Market
+			s.enrichOrderLocked(refreshedChild)
 		}
-		s.mu.Lock()
 		s.upsertParentLocked(parent)
 		if refreshedChild != nil {
 			s.upsertOrderLocked(*refreshedChild)
@@ -1818,6 +1837,21 @@ func simulatedQuote(price, quantity domain.Money, ticker, outcome string) *domai
 	return &quote
 }
 
+// seedAccountLocked fills the simulated demo account and names its rows
+// through the same path live rows use. Callers hold s.mu.
+func (s *Service) seedAccountLocked() {
+	seedAccount(&s.snapshot)
+	for i := range s.snapshot.Orders {
+		s.enrichOrderLocked(&s.snapshot.Orders[i])
+	}
+	for i := range s.snapshot.Positions {
+		s.enrichPositionLocked(&s.snapshot.Positions[i])
+	}
+	for i := range s.snapshot.Fills {
+		s.enrichFillLocked(&s.snapshot.Fills[i])
+	}
+}
+
 func seedAccount(snapshot *domain.Snapshot) {
 	if len(snapshot.Orders) > 0 || len(snapshot.Events) == 0 {
 		return
@@ -1829,9 +1863,10 @@ func seedAccount(snapshot *domain.Snapshot) {
 	}
 	snapshot.Bankroll = 18420 * domain.Dollar
 	snapshot.AtRisk = 3875 * domain.Dollar
-	snapshot.Orders = []domain.Order{{ID: "sim-order-1", Exchange: "Kalshi", Ticker: "SIM-" + event.ID + "-H", Rotation: event.Participants[1].Rotation, Market: event.Participants[1].Name + " moneyline", Side: "yes", Status: "working", Quantity: 2500 * domain.Dollar, LimitPrice: 5800, CashRisk: 1450 * domain.Dollar, CreatedAt: now.Add(-3 * time.Minute)}}
-	snapshot.Fills = []domain.Fill{{ID: "sim-fill-1", Exchange: "Kalshi", Ticker: "SIM-" + event.ID + "-H", EventID: event.ID, Rotation: event.Participants[1].Rotation, Team: event.Participants[1].Name, Market: "moneyline", Side: "yes", Quantity: 1000 * domain.Dollar, RawPrice: 5700, AllInMoneyline: -138, Fee: 28 * domain.Dollar, CashRisk: 598 * domain.Dollar, CreatedAt: now.Add(-time.Minute)}}
-	snapshot.Positions = []domain.Position{{Exchange: "Kalshi", Ticker: "SIM-" + event.ID + "-H", Rotation: event.Participants[1].Rotation, Market: event.Participants[1].Name + " moneyline", Quantity: 1000 * domain.Dollar, CashRisk: 598 * domain.Dollar, AveragePrice: 5700, CurrentPrice: 5800, UnrealizedPnL: 10 * domain.Dollar}}
+	ticker := "SIM-" + event.ID + "-ML-H"
+	snapshot.Orders = []domain.Order{{ID: "sim-order-1", Exchange: "Kalshi", Ticker: ticker, Rotation: event.Participants[1].Rotation, Market: "Moneyline", Side: "yes", Status: "resting", Quantity: 2500 * domain.Dollar, LimitPrice: 5800, CashRisk: 1450 * domain.Dollar, CreatedAt: now.Add(-3 * time.Minute)}}
+	snapshot.Fills = []domain.Fill{{ID: "sim-fill-1", Exchange: "Kalshi", Ticker: ticker, EventID: event.ID, Rotation: event.Participants[1].Rotation, Team: event.Participants[1].Name, Market: "Moneyline", Side: "yes", Quantity: 1000 * domain.Dollar, RawPrice: 5700, AllInMoneyline: -138, Fee: 28 * domain.Dollar, CashRisk: 598 * domain.Dollar, CreatedAt: now.Add(-time.Minute)}}
+	snapshot.Positions = []domain.Position{{Exchange: "Kalshi", Ticker: ticker, Rotation: event.Participants[1].Rotation, Market: "Moneyline", Side: "yes", Quantity: 1000 * domain.Dollar, CashRisk: 598 * domain.Dollar, AveragePrice: 5700, CurrentPrice: 5800, UnrealizedPnL: 10 * domain.Dollar}}
 }
 
 func SportKey(value string) string { return strings.ToUpper(strings.TrimSpace(value)) }

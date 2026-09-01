@@ -16,8 +16,8 @@ September 1, 2026 hardening (merged to `main` the same day): a `CLAUDE.md` brief
 - `internal/live` maintains sequence-checked in-memory order books.
 - `internal/orders` validates and sizes fee-inclusive parent orders, enforces the moneyline cap, links child orders, and owns demo iceberg, follow, and cancellation state.
 - `internal/routing` deterministically plans a single parent cash-risk target across exchange price levels using fee-included price, shared venue cash, hidden commitments, liquidity, freshness, and the hard all-in price cap. It does not execute orders.
-- `internal/storage` owns SQLite WAL tables for events, automatic mappings, manual overrides, grouped review payloads, durable parent orders, settlements, settings, and audit history.
-- `internal/app` coordinates polling, mapping, reconciliation, streaming, and the browser snapshot.
+- `internal/storage` owns SQLite WAL tables for events, automatic mappings, manual overrides, grouped review payloads, durable parent orders, settlements, market labels, settings, and audit history.
+- `internal/app` coordinates polling, mapping, reconciliation, streaming, and the browser snapshot. `internal/app/labels.go` turns exchange tickers into readable game and outcome names.
 - `internal/server` exposes JSON and WebSocket endpoints, with mutation handlers delegated to the startup-controlled service guard, and serves the embedded app.
 - `web/src/App.svelte` contains the lightweight sportsbook board, instant search, filters, click-to-expand inline book ladder, and bottom activity tray.
 - `web/src/orderslip.css` isolates the small floating order-slip surface from the critical board styles.
@@ -27,7 +27,7 @@ September 1, 2026 hardening (merged to `main` the same day): a `CLAUDE.md` brief
 ## Browser API
 
 - `GET /api/health` — service and feed state
-- `GET /api/snapshot` — events, open positions, recent settlements, managed orders, bankroll, and health
+- `GET /api/snapshot` — events, open positions, recent settlements, managed orders, bankroll, and health. Positions, orders, fills, and settlements each carry `game` and `outcome` (fills use `team` for the outcome) alongside `ticker`.
 - `GET /api/books/{ticker}` — select the UI order book; returns `202` while its first live snapshot is opening
 - `DELETE /api/books/{ticker}` — release the UI book when the game dropdown closes; strategy-required books remain subscribed
 - `GET /api/settings` — available sports, event counts, and saved preferences
@@ -118,6 +118,16 @@ Open `http://127.0.0.1:8080/`. Use `PMBATTLE_TRADING_ENABLED=false` for read-onl
 - Extra/added games are identified by an exactly six-digit numeric schedule event ID. The Settings tab can exclude them before market matching and subscription.
 - Simulated events include selectable moneyline, spread, and total quotes. Six-digit added games use lower simulated available quantities.
 
+## Readable account rows
+
+A Kalshi ticker such as `KXNCAAFTOTAL-26SEP05ECUALA-53` is meaningless on screen, so every position, order, fill, and settlement carries a `game` ("#301 Clemson at #302 LSU") and an `outcome` ("Over 52.5"). `internal/app/labels.go` resolves them in three tiers, best first:
+
+1. **The live board.** `findQuoteForSide` matches the ticker *and the contract side*, because a total's Over and Under share one ticker and differ only by side. Spread lines mirror for the home side, since `MarketView.Line` always describes the away side.
+2. **Stored market labels.** Every catalog refresh saves each discovered market's title, yes/no outcome, type, and line into the `market_labels` table. For tickers that are neither on the board nor stored, `reconcileAccount` and `reconcileSettlements` call the read-only `Adapter.DescribeMarket`, at most 40 per cycle, and a failed lookup is not retried for an hour. This is what makes settled History rows readable long after the game is gone.
+3. **The ticker itself,** decoded to "College Football · Sep 5 · ECUALA" and "Total". This tier deliberately never shows a line number: a 52.5 total is ticker strike 53, so guessing would put a wrong figure next to real money.
+
+Settlement history is re-named on every load rather than only when new rows arrive, so rows stored before names existed become readable without a migration. The browser shows the game in bold, the outcome and market beneath, and keeps the raw ticker as the row's hover text.
+
 ## Kalshi API verification status (September 1, 2026)
 
 Kalshi's own documentation sites were unreachable from the remote coding environment, so the checks below used web search summaries and a third-party SDK's documentation (TexasCoding/kalshi-python-sdk). Treat "consistent" as "no contradiction found", not proof. The first live order must confirm each line.
@@ -137,6 +147,7 @@ Kalshi's own documentation sites were unreachable from the remote coding environ
 - The current general Kalshi fee rule is versioned in one module. Market-specific fee exceptions remain a known follow-up and must be verified during manual testing.
 - Follow has automated coverage with a fake adapter, including replacement order IDs on amend, but it has never been exercised against Kalshi. It must not run live until the post-only and amend-response questions in "Kalshi API verification status" are settled. The owner has chosen to test in production with a small `PMBATTLE_MAX_CASH_RISK` rather than in the demo environment.
 - The first production order attempt on September 1, 2026 reached Kalshi and was rejected for count precision (fixed the same day, see the verification section). No order has been accepted by Kalshi through PMBattle yet. `FIRST-LIVE-ORDER.md` is the script for the next attempt.
+- Known, not fixed: in simulated mode the account reconcile overwrites the seeded demo Orders and Positions with the empty read-only snapshot, so those two tabs usually look empty while Fills keeps its seeded row. Pre-existing and only affects the simulated demo.
 - Saving sport preferences restarts the exchange loop. On September 1 that produced `database is locked (SQLITE_BUSY)` in save schedule and a blank Available figure until the next 30-second refresh. Fixed the same day: SQLite's busy timeout, WAL mode, and immediate write locking are now set through the connection string so every pooled connection has them (`TestConcurrentWritersDoNotHitSQLiteBusy` fails on the old code), an interrupted reconcile no longer publishes partial state or marks the account degraded (`TestInterruptedReconciliationKeepsPriorAccountStateAndStaysSilent`), and the restarted loop reconciles the account before the slow market refresh. Not reproduced live yet; confirm on the next run by saving preferences while connected.
 - The shared-bankroll gate is process-local and currently covers the single Kalshi adapter. The pure multi-exchange allocation planner is implemented and tested, but live routing still needs a second adapter plus the execution coordinator that creates children and resizes/cancels competing orders as fills arrive. Do not infer live smart routing from the planner alone.
 - Completed parents are retained in SQLite without pruning yet. A retention policy will be needed as history grows.

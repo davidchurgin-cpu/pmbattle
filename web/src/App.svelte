@@ -113,7 +113,45 @@
     return { ...value, events: value.events || [], parentOrders: value.parentOrders || [], orders: value.orders || [], positions: value.positions || [], settlements: value.settlements || [], fills: value.fills || [], availableToAllocate: value.availableToAllocate ?? value.bankroll ?? 0, settings: { ...value.settings, availableSports: value.settings?.availableSports || [] } }
   }
   function normalizeBook(value: OrderBook): OrderBook { return { ...value, yes: value.yes || [], no: value.no || [] } }
-  function fillName(fill: Fill) { return fill.team || fill.market || fill.ticker }
+  // Account rows show the game and the outcome, never the raw exchange
+  // ticker. The ticker stays available as the row's hover text.
+  type NamedRow = { game?: string; outcome?: string; market?: string; ticker: string }
+  const rowGame = (row: NamedRow) => row.game || row.ticker
+  const rowDetail = (row: NamedRow) => [row.outcome, row.market].filter(Boolean).join(' · ') || row.ticker
+  function fillName(fill: Fill) { return [fill.team, fill.market].filter(Boolean).join(' · ') || fill.ticker }
+  function ago(value: string) {
+    const at = new Date(value).getTime()
+    if (!Number.isFinite(at)) return ''
+    const seconds = Math.max(0, Math.round((Date.now() - at) / 1000))
+    if (seconds < 60) return `${seconds}s ago`
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`
+    if (seconds < 86400) return `${Math.round(seconds / 3600)}h ago`
+    return day(value)
+  }
+  // One glanceable chip per order instead of raw words like partially_filled.
+  const statusLabels: Record<string, { label: string; tone: string }> = {
+    filled: { label: 'Filled', tone: 'done' }, executed: { label: 'Filled', tone: 'done' }, closed: { label: 'Filled', tone: 'done' },
+    partially_filled: { label: 'Partial', tone: 'live' },
+    canceled: { label: 'Canceled', tone: 'off' }, cancelled: { label: 'Canceled', tone: 'off' },
+    rejected: { label: 'Rejected', tone: 'alert' },
+    paused: { label: 'Paused', tone: 'alert' }, paused_stale: { label: 'Stale book', tone: 'alert' },
+    price_capped: { label: 'Price capped', tone: 'alert' }, risk_capped: { label: 'Risk capped', tone: 'alert' },
+    waiting_for_book: { label: 'Waiting', tone: 'alert' },
+    resting: { label: 'Working', tone: 'live' }, working: { label: 'Working', tone: 'live' },
+    submitting: { label: 'Sending', tone: 'live' }, submitted: { label: 'Sending', tone: 'live' },
+    repricing: { label: 'Repricing', tone: 'live' }, refreshing: { label: 'Refreshing', tone: 'live' },
+    risk_capping: { label: 'Capping', tone: 'alert' }, awaiting_fill: { label: 'Working', tone: 'live' },
+  }
+  function orderStatus(order: Order) {
+    const parent = parentForOrder(order)
+    const raw = (parent?.status || order.status || '').toLowerCase().trim()
+    return statusLabels[raw] || { label: raw.replace(/_/g, ' ') || 'Unknown', tone: 'live' }
+  }
+  function orderNote(order: Order) {
+    const parent = parentForOrder(order)
+    if (!parent) return ''
+    return parent.strategy === 'follow' && parent.replaceCount ? `${parent.strategy} · ${parent.replaceCount} reprices` : parent.strategy
+  }
   function dismissNotice(key: string) { fillNotices = fillNotices.filter(notice => notice.key !== key) }
   function notifyFill(fill: Fill) {
     const key = fill.id || `${fill.ticker}-${Date.now()}`
@@ -234,10 +272,6 @@
   }
   function parentForOrder(order: Order) {
     return snapshot.parentOrders.find(parent => parent.childOrderIds.includes(order.id))
-  }
-  function monitoredStatus(order: Order) {
-    const parent = parentForOrder(order)
-    return parent ? `${parent.strategy} · ${parent.status}${parent.strategy === 'follow' && parent.replaceCount ? ` · ${parent.replaceCount} reprices` : ''}` : order.status
   }
   const canResume = (parent: ParentOrder | undefined) => parent?.strategy === 'follow' && parent.status?.toLowerCase() === 'paused'
   async function resumeParent(parent: ParentOrder) {
@@ -413,19 +447,20 @@
     </div>
     {#if trayOpen}<div class="tray-body">
       {#if trayTab === 'fills'}
-        <div class="table-head"><span>Time / market</span><span>Exchange</span><span>Quantity</span><span>Raw</span><span>All-in</span><span>Fee</span><span>Cash risk</span></div>
-        {#each snapshot.fills as fill}<div class="table-row"><span><b>{new Date(fill.createdAt).toLocaleTimeString()} · #{fill.rotation}</b><small>{fill.team} {fill.market}</small></span><span>{fill.exchange}</span><span>{qty(fill.quantity)}</span><span>{money(fill.rawPrice)}</span><span>{ml(fill.allInMoneyline)}</span><span>{money(fill.fee)}</span><span>{money(fill.cashRisk)}</span></div>{:else}<div class="empty">No fills yet</div>{/each}
+        <div class="table-head"><span>Game / bet</span><span>Exchange</span><span class="num">Quantity</span><span class="num">Raw</span><span class="num">All-in</span><span class="num">Fee</span><span class="num">Cash risk</span></div>
+        {#each snapshot.fills as fill}<div class="table-row" title={fill.ticker}><span><b>{rowGame(fill)}</b><small>{fillName(fill)} · {ago(fill.createdAt)}</small></span><span>{fill.exchange}</span><span class="num">{qty(fill.quantity)}</span><span class="num">{money(fill.rawPrice)}</span><span class="num">{ml(fill.allInMoneyline)}</span><span class="num">{money(fill.fee)}</span><span class="num">{money(fill.cashRisk)}</span></div>{:else}<div class="empty">No fills yet</div>{/each}
       {:else if trayTab === 'orders'}
         {#if snapshot.health.tradingEnabled}<div class="cancel-scope-bar"><b>{snapshot.health.mode === 'live' ? 'Real-order kill switch' : 'Demo kill switch'}</b><select bind:value={cancelGroupScope} aria-label="Cancel scope"><option value="all">All managed orders</option><option value="event" disabled={!selectedEvent}>Current game</option><option value="strategy:basic">Basic orders</option><option value="strategy:iceberg">Iceberg orders</option><option value="strategy:follow">Follow orders</option><option value="exchange:Kalshi">Kalshi managed orders</option></select><button disabled={cancelingGroup || activeParents.length === 0} on:click={cancelGroup}>{cancelingGroup ? 'Canceling…' : 'Cancel scope'}</button><small aria-live="polite">{cancelGroupStatus}</small></div>{/if}
-        {#each snapshot.orders as order}<div class="table-row compact"><span><b>#{order.rotation} {order.market}</b><small>{order.ticker}</small></span><span>{order.exchange}</span><span>{qty(order.quantity)}</span><span>{money(order.limitPrice)}</span><span>{monitoredStatus(order)}</span><span>—</span><span class="order-risk">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? 'Resuming…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
+        <div class="table-head"><span>Game / bet</span><span>Exchange</span><span class="num">Quantity</span><span class="num">Limit</span><span>Status</span><span></span><span class="num">Cash risk</span></div>
+        {#each snapshot.orders as order}<div class="table-row compact" title={order.ticker}><span><b>{rowGame(order)}</b><small>{rowDetail(order)}</small></span><span>{order.exchange}</span><span class="num">{qty(order.quantity)}</span><span class="num">{money(order.limitPrice)}</span><span><i class="pill {orderStatus(order).tone}">{orderStatus(order).label}</i>{#if orderNote(order)}<small>{orderNote(order)}</small>{/if}</span><span></span><span class="order-risk num">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? 'Resuming…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && parentForOrder(order) && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingParentID)} on:click={() => cancelParent(parentForOrder(order)!)}>{cancelingParentID === parentForOrder(order)?.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
       {:else if trayTab === 'positions'}
-        <div class="table-head"><span>Market</span><span>Exchange</span><span>Side / quantity</span><span>Exposure</span><span>Traded</span><span>Fees</span><span>Realized P&amp;L</span></div>
-        {#each snapshot.positions as position}<div class="table-row compact"><span><b>{position.rotation ? `#${position.rotation} ` : ''}{position.market}</b><small>{position.ticker}</small></span><span>{position.exchange}</span><span>{(position.side || 'yes').toUpperCase()} · {qty(Math.abs(position.quantity))}</span><span>{money(position.cashRisk)}</span><span>{money(position.totalTraded || 0)}</span><span>{money(position.feesPaid || 0)}</span><span class:positive={(position.realizedPnl || 0) >= 0} class:negative={(position.realizedPnl || 0) < 0}>{money(position.realizedPnl || 0)}</span></div>{:else}<div class="empty">No open positions</div>{/each}
+        <div class="table-head"><span>Game / bet</span><span>Exchange</span><span class="num">Contracts</span><span class="num">Exposure</span><span class="num">Traded</span><span class="num">Fees</span><span class="num">Realized P&amp;L</span></div>
+        {#each snapshot.positions as position}<div class="table-row compact" title={position.ticker}><span><b>{rowGame(position)}</b><small>{rowDetail(position)}</small></span><span>{position.exchange}</span><span class="num">{qty(Math.abs(position.quantity))}</span><span class="num">{money(position.cashRisk)}</span><span class="num">{money(position.totalTraded || 0)}</span><span class="num">{money(position.feesPaid || 0)}</span><span class="num" class:positive={(position.realizedPnl || 0) >= 0} class:negative={(position.realizedPnl || 0) < 0}>{money(position.realizedPnl || 0)}</span></div>{:else}<div class="empty">No open positions</div>{/each}
       {:else}
         <div class="history-switch"><button class:active={historyMode === 'settlements'} on:click={() => showHistory('settlements')}>Settlements</button><button class:active={historyMode === 'audit'} on:click={() => showHistory('audit')}>System audit</button><span>{historyMode === 'audit' ? 'Loaded only when opened' : 'Exchange results'}</span></div>
         {#if historyMode === 'settlements'}
-          <div class="table-head"><span>Settled / market</span><span>Exchange</span><span>Result</span><span>Yes / No</span><span>Revenue</span><span>Fees</span><span>Net P&amp;L</span></div>
-          {#each snapshot.settlements as settlement}<div class="table-row compact"><span><b>{new Date(settlement.settledAt).toLocaleString()}{settlement.rotation ? ` · #${settlement.rotation}` : ''}</b><small>{settlement.market || settlement.ticker}</small></span><span>{settlement.exchange}</span><span>{settlement.result.toUpperCase()}</span><span>{qty(settlement.yesQuantity)} / {qty(settlement.noQuantity)}</span><span>{money(settlement.revenue)}</span><span>{money(settlement.fee)}</span><span class:positive={settlement.netPnl >= 0} class:negative={settlement.netPnl < 0}>{money(settlement.netPnl)}</span></div>{:else}<div class="empty">No settled markets yet</div>{/each}
+          <div class="table-head"><span>Game / bet</span><span>Exchange</span><span>Result</span><span class="num">Yes / No</span><span class="num">Revenue</span><span class="num">Fees</span><span class="num">Net P&amp;L</span></div>
+          {#each snapshot.settlements as settlement}<div class="table-row compact" title={settlement.ticker}><span><b>{rowGame(settlement)}</b><small>{rowDetail(settlement)} · {day(settlement.settledAt)}</small></span><span>{settlement.exchange}</span><span>{settlement.result.toUpperCase()}</span><span class="num">{qty(settlement.yesQuantity)} / {qty(settlement.noQuantity)}</span><span class="num">{money(settlement.revenue)}</span><span class="num">{money(settlement.fee)}</span><span class="num" class:positive={settlement.netPnl >= 0} class:negative={settlement.netPnl < 0}>{money(settlement.netPnl)}</span></div>{:else}<div class="empty">No settled markets yet</div>{/each}
         {:else}
           <div class="audit-list">
             {#each auditRecords as record (record.id)}<article><span><b>{new Date(record.occurredAt).toLocaleString()}</b><small>Record #{record.id}</small></span><span><b>{auditTitle(record.kind)}</b><small>{auditSummary(record)}</small></span><details><summary>Details</summary><pre>{JSON.stringify(record.payload, null, 2)}</pre></details></article>{:else}{#if !auditLoading}<div class="empty">No order activity has been audited yet</div>{/if}{/each}
@@ -487,7 +522,7 @@
   {/if}
   <section class="fill-notices" aria-live="assertive" aria-label="Fill notifications">
     {#each fillNotices as notice (notice.key)}
-      <article class="fill-notice"><i></i><div><small>FILL RECEIVED</small><b>{fillName(notice.fill)}</b><span>{qty(notice.fill.quantity)} contracts · {ml(notice.fill.allInMoneyline)} all-in</span></div><button on:click={() => viewFill(notice.key)}>View</button><button class="notice-close" aria-label="Dismiss fill notification" on:click={() => dismissNotice(notice.key)}>×</button></article>
+      <article class="fill-notice"><i></i><div><small>FILL RECEIVED</small><b>{fillName(notice.fill)}</b><span>{rowGame(notice.fill)} · {qty(notice.fill.quantity)} @ {ml(notice.fill.allInMoneyline)}</span></div><button on:click={() => viewFill(notice.key)}>View</button><button class="notice-close" aria-label="Dismiss fill notification" on:click={() => dismissNotice(notice.key)}>×</button></article>
     {/each}
   </section>
   {#if slipOpen && selectedQuote && selectedEvent}

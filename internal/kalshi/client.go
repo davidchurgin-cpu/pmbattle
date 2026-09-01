@@ -160,7 +160,7 @@ func canonicalMarket(e event, m market, marketType domain.MarketType) domain.Can
 	}
 	return domain.CanonicalMarket{
 		ID: m.Ticker, Exchange: "kalshi", ExchangeTicker: m.Ticker, Type: marketType,
-		Outcome: strings.TrimSpace(m.YesSubTitle), Line: line, Title: strings.TrimSpace(e.Title),
+		Outcome: strings.TrimSpace(m.YesSubTitle), NoOutcome: strings.TrimSpace(m.NoSubTitle), Line: line, Title: strings.TrimSpace(e.Title),
 		Subtitle:  strings.TrimSpace(e.Subtitle + " " + m.Title + " " + m.YesSubTitle),
 		CloseTime: m.CloseTime, OccurrenceTime: m.Occurrence, YesBid: bid, YesAsk: ask,
 		YesBidSize: bidSize, YesAskSize: askSize, MappingStatus: "review",
@@ -521,6 +521,56 @@ func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
 		return errors.New("kalshi order id is required")
 	}
 	return c.doJSON(ctx, http.MethodDelete, "/portfolio/events/orders/"+url.PathEscape(orderID), nil, nil, http.StatusOK)
+}
+
+// DescribeMarket fetches one market and its event so a ticker can be shown
+// as "Clemson at LSU / Over 52.5" instead of a raw code. Read-only.
+func (c *Client) DescribeMarket(ctx context.Context, ticker string) (domain.MarketLabel, error) {
+	ticker = strings.TrimSpace(ticker)
+	if ticker == "" {
+		return domain.MarketLabel{}, errors.New("market ticker is required")
+	}
+	if c.key == nil || c.cfg.KeyID == "" {
+		return domain.MarketLabel{}, errors.New("kalshi market lookup requires API credentials")
+	}
+	var marketPayload struct {
+		Market market `json:"market"`
+	}
+	if err := c.getJSON(ctx, "/markets/"+url.PathEscape(ticker), &marketPayload); err != nil {
+		return domain.MarketLabel{}, err
+	}
+	m := marketPayload.Market
+	label := domain.MarketLabel{
+		Exchange: "kalshi", Ticker: ticker, Title: strings.TrimSpace(m.Title),
+		YesOutcome: strings.TrimSpace(m.YesSubTitle), NoOutcome: strings.TrimSpace(m.NoSubTitle),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if m.FloorStrike != nil {
+		label.Line = strconv.FormatFloat(*m.FloorStrike, 'f', -1, 64)
+	}
+	if m.EventTicker != "" {
+		var eventPayload struct {
+			Event event `json:"event"`
+		}
+		if err := c.getJSON(ctx, "/events/"+url.PathEscape(m.EventTicker), &eventPayload); err == nil && strings.TrimSpace(eventPayload.Event.Title) != "" {
+			label.Title = strings.TrimSpace(eventPayload.Event.Title)
+			label.Type = seriesMarketType(eventPayload.Event.SeriesTicker)
+		}
+	}
+	if label.Type == "" {
+		label.Type = tickerMarketType(ticker)
+	}
+	return label, nil
+}
+
+// tickerMarketType infers the market type from the series prefix of a ticker
+// such as KXNCAAFTOTAL-26SEP05ECUALA-53.
+func tickerMarketType(ticker string) domain.MarketType {
+	series := ticker
+	if i := strings.Index(ticker, "-"); i > 0 {
+		series = ticker[:i]
+	}
+	return seriesMarketType(series)
 }
 
 func tradingEnvironment(environment string) bool {

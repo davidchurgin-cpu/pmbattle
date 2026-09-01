@@ -63,8 +63,23 @@ type CanonicalMarket struct {
 	YesAsk            Money      `json:"yesAsk,omitempty"`
 	YesBidSize        Money      `json:"yesBidSize,omitempty"`
 	YesAskSize        Money      `json:"yesAskSize,omitempty"`
+	NoOutcome         string     `json:"noOutcome,omitempty"`
 	MappingConfidence int        `json:"mappingConfidence"`
 	MappingStatus     string     `json:"mappingStatus"`
+}
+
+// MarketLabel is the human-readable identity of an exchange market, kept so
+// positions, orders, fills, and settlements can be described even after the
+// game has left the schedule or the market has closed.
+type MarketLabel struct {
+	Exchange   string     `json:"exchange"`
+	Ticker     string     `json:"ticker"`
+	Title      string     `json:"title"`                // event title, e.g. "Clemson at LSU"
+	YesOutcome string     `json:"yesOutcome,omitempty"` // e.g. "Over 52.5" or "Clemson"
+	NoOutcome  string     `json:"noOutcome,omitempty"`
+	Type       MarketType `json:"type,omitempty"`
+	Line       string     `json:"line,omitempty"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
 }
 
 type MappingCandidate struct {
@@ -149,6 +164,7 @@ type Fill struct {
 	Ticker         string    `json:"ticker"`
 	EventID        string    `json:"eventId,omitempty"`
 	Rotation       string    `json:"rotation,omitempty"`
+	Game           string    `json:"game,omitempty"`
 	Team           string    `json:"team,omitempty"`
 	Market         string    `json:"market"`
 	Side           string    `json:"side"`
@@ -165,6 +181,8 @@ type Order struct {
 	Exchange       string    `json:"exchange"`
 	Ticker         string    `json:"ticker"`
 	Rotation       string    `json:"rotation,omitempty"`
+	Game           string    `json:"game,omitempty"`
+	Outcome        string    `json:"outcome,omitempty"`
 	Market         string    `json:"market"`
 	Side           string    `json:"side"`
 	Status         string    `json:"status"`
@@ -220,6 +238,8 @@ type Position struct {
 	Ticker        string    `json:"ticker"`
 	EventID       string    `json:"eventId,omitempty"`
 	Rotation      string    `json:"rotation,omitempty"`
+	Game          string    `json:"game,omitempty"`
+	Outcome       string    `json:"outcome,omitempty"`
 	Market        string    `json:"market"`
 	Side          string    `json:"side,omitempty"`
 	Quantity      Money     `json:"quantity"`
@@ -239,6 +259,8 @@ type Settlement struct {
 	EventTicker     string    `json:"eventTicker,omitempty"`
 	EventID         string    `json:"eventId,omitempty"`
 	Rotation        string    `json:"rotation,omitempty"`
+	Game            string    `json:"game,omitempty"`
+	Outcome         string    `json:"outcome,omitempty"`
 	Market          string    `json:"market,omitempty"`
 	Result          string    `json:"result"`
 	YesQuantity     Money     `json:"yesQuantity"`

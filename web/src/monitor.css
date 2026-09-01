@@ -49,3 +49,10 @@
   .cancel-scope-bar { grid-template-columns: 1fr auto; }
   .cancel-scope-bar b, .cancel-scope-bar small { grid-column: 1 / -1; }
 }
+.table-head .num,.table-row .num{text-align:right;justify-self:end}
+.table-row .num small{text-align:right}
+.pill{display:inline-block;padding:2px 6px;border-radius:999px;font-size:9px;font-weight:600;font-style:normal;letter-spacing:.03em;white-space:nowrap}
+.pill.live{background:var(--accent-soft);color:var(--accent)}
+.pill.done{background:var(--bid-soft);color:var(--bid)}
+.pill.alert{background:var(--ask-soft);color:var(--ask)}
+.pill.off{background:var(--panel-2);color:var(--muted)}

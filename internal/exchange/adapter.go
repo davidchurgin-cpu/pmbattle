@@ -47,4 +47,7 @@ type Adapter interface {
 	PlaceOrder(context.Context, PlaceOrderRequest) (domain.Order, error)
 	AmendOrder(context.Context, AmendOrderRequest) (domain.Order, error)
 	CancelOrder(context.Context, string) error
+	// DescribeMarket looks up the human-readable identity of one market. It is
+	// read-only and used for tickers that are no longer in the live catalog.
+	DescribeMarket(context.Context, string) (domain.MarketLabel, error)
 }

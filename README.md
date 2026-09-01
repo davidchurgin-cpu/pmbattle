@@ -34,6 +34,8 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - Exchange-neutral smart-routing planner allocates one parent cash-risk target across venue balances and fee-included liquidity in best-price order, shares each venue's bankroll across its levels, and reports any safely unallocated remainder
 - Available cash, new-order capacity, and cash at risk update in the browser before a live fill notification is displayed
 - A compact Settings safety panel shows environment, exchange/account state, last reconciliation, mapped-market count, available trading balance, cash at risk, and the server-controlled order-entry lock
+- Positions, Orders, Fills, and History name every row by game and bet ("#301 Clemson at #302 LSU", "Over 52.5") instead of the exchange's ticker code, with the ticker kept as hover text; settled markets stay readable because their names are stored locally
+- Order status shown as a colour-coded chip, fills timed as "3m ago", and every money column right-aligned on shared digit widths for fast scanning
 - Fixed bottom activity dock with always-visible position/order/fill counts, working-order status, and expandable detail tables, plus immediate visual alerts for every newly streamed full or partial fill
 - Compact full-width sportsbook rows; genuinely absent market types say `Not listed`, while listed contracts without an offer say `Listed · no offer`
 - Explicit, accessible side identities across the board, book, and slip: Away blue, Home purple, Over green, and Under amber

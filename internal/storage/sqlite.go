@@ -43,6 +43,7 @@ func (s *Store) init(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS parent_orders (id TEXT PRIMARY KEY, status TEXT NOT NULL, payload BLOB NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS settlements (exchange TEXT NOT NULL, ticker TEXT NOT NULL, settled_at TEXT NOT NULL, payload BLOB NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(exchange,ticker))`,
+		`CREATE TABLE IF NOT EXISTS market_labels (exchange TEXT NOT NULL, ticker TEXT NOT NULL, payload BLOB NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(exchange,ticker))`,
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement); err != nil {
@@ -385,4 +386,58 @@ func (s *Store) GetSetting(ctx context.Context, key string) (string, bool, error
 		return "", false, err
 	}
 	return value, true, nil
+}
+
+func (s *Store) SaveMarketLabels(ctx context.Context, labels []domain.MarketLabel) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO market_labels(exchange,ticker,payload,updated_at) VALUES(?,?,?,?) ON CONFLICT(exchange,ticker) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	now := time.Now().UTC()
+	for _, label := range labels {
+		if label.Ticker == "" {
+			continue
+		}
+		if label.UpdatedAt.IsZero() {
+			label.UpdatedAt = now
+		}
+		payload, err := json.Marshal(label)
+		if err != nil {
+			return err
+		}
+		if _, err := stmt.ExecContext(ctx, label.Exchange, label.Ticker, payload, now.Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) LoadMarketLabels(ctx context.Context) (map[string]domain.MarketLabel, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT payload FROM market_labels`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	labels := make(map[string]domain.MarketLabel)
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var label domain.MarketLabel
+		if err := json.Unmarshal(payload, &label); err != nil {
+			return nil, err
+		}
+		labels[label.Ticker] = label
+	}
+	return labels, rows.Err()
 }
