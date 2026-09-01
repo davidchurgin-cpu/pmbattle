@@ -7,14 +7,13 @@ Read it once end to end before you start. Budget about an hour. Have the Kalshi 
 ## Before you start
 
 - [ ] You are on the latest code: in PowerShell, inside the project folder, run `git pull`, then `cd web`, `npm run build`, `cd ..`, `go build -o pmbattle.exe .`
-- [ ] You have a start script outside the project folder (for example `C:\secure\start-live-test.ps1`) with these lines. Fill in your own key ID, key path, and a password of at least 8 characters.
+- [ ] You have a start script outside the project folder (for example `C:\secure\start-live-test.ps1`) with these lines. Fill in your own key ID and key path.
 
 ```powershell
 $env:PMBATTLE_KALSHI_ENV = "production"
 $env:PMBATTLE_KALSHI_KEY_ID = "your-key-id"
 $env:PMBATTLE_KALSHI_PRIVATE_KEY_PATH = "C:\secure\kalshi-private-key.pem"
 $env:PMBATTLE_SIMULATED = "false"
-$env:PMBATTLE_PASSWORD = "choose-a-real-password"
 $env:PMBATTLE_MAX_CASH_RISK = "5"
 $env:PMBATTLE_TRADING_ENABLED = "true"
 Set-Location $HOME\pmbattle
@@ -26,7 +25,7 @@ Set-Location $HOME\pmbattle
 
 ## Part 1: read-only sanity check
 
-Start the script. Open http://127.0.0.1:8080 and sign in with your password.
+Start the script. Open http://127.0.0.1:8080.
 
 - [ ] The top bar shows **LIVE · CONNECTED**.
 - [ ] Settings shows Environment **LIVE**, Account sync **READY**, a mapped-market count in the hundreds, and the badge **LIVE TRADING**.
@@ -67,7 +66,7 @@ This spends a small amount of real money on purpose. Skip it if Part 2 had any m
 ## Part 4: lock it again
 
 - [ ] Stop the server with Ctrl + C.
-- [ ] Edit the start script: set `PMBATTLE_TRADING_ENABLED = "false"`. Keep the password line.
+- [ ] Edit the start script: set `PMBATTLE_TRADING_ENABLED = "false"`.
 - [ ] Start it again. Settings must show **READ-ONLY** and the note "Production order entry is off until enabled on the server."
 
 ## What to tell the next AI session

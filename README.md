@@ -44,7 +44,7 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - Standard light and dark themes
 - Persisted Settings tab for enabling only the sports you want to load and subscribe to
 - Optional filter for six-digit extra/added games with lower market limits
-- Browser sign-in with `PMBATTLE_PASSWORD`, required whenever order entry is enabled, plus a request-header check that blocks cross-site request forgery on every state-changing call
+- A request-header check that blocks cross-site request forgery on every state-changing call
 - `PMBATTLE_MAX_CASH_RISK` per-order cash-risk cap for live testing, shown in Settings and enforced by both the order slip and the engine
 - Windows, Linux, and Docker builds
 
@@ -97,11 +97,8 @@ PMBATTLE_KALSHI_ENV=demo
 PMBATTLE_KALSHI_KEY_ID=your-key-id
 PMBATTLE_KALSHI_PRIVATE_KEY_PATH=/secure/path/kalshi-private-key.pem
 PMBATTLE_SIMULATED=false
-PMBATTLE_PASSWORD=choose-a-real-password
 PMBATTLE_TRADING_ENABLED=false
 ```
-
-`PMBATTLE_PASSWORD` puts a sign-in screen in front of the whole app. Every API route, including the live stream, then requires a signed-in browser session, and the server refuses to start with order entry enabled unless a password of at least 8 characters is set. Sessions last 12 hours; five wrong passwords from one address lock sign-in for 15 minutes. Set it even for read-only use whenever anyone other than you can reach the server.
 
 `PMBATTLE_MAX_CASH_RISK` is an optional per-order ceiling in dollars, between 1 and 20000. While testing real orders, set it to a small number such as `5`; the server then refuses any single order with more cash at risk, the order slip disables its button above that amount, and the Settings safety panel shows the active cap. It can lower the built-in $20,000 limit but never raise it.
 
@@ -133,8 +130,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - The UI clearly identifies simulated/live mode and stale data.
 - Kalshi's `balance` is treated as available trading cash, not total account equity. Account orders, positions, settlements, and available cash are reconciled every 30 seconds while connected, as well as at startup and after reconnects.
 - Credentials never pass through the browser.
-- Order entry cannot be enabled without `PMBATTLE_PASSWORD`. With a password set, every API call and the live stream require a signed-in session cookie that is HTTP-only and same-site strict.
-- Every state-changing API call must carry the `X-Requested-With: PMBattle` header, which a cross-site page cannot forge without a CORS preflight the server never grants. This holds even when no password is configured.
+- Every state-changing API call must carry the `X-Requested-With: PMBattle` header, which a cross-site page cannot forge without a CORS preflight the server never grants. There is no login; the office network allowlist is the only access gate.
 - The server enforces same-origin browser WebSockets, a restrictive content security policy, MIME sniffing protection, referrer suppression, and frame denial.
 - Order submission remains off unless `PMBATTLE_TRADING_ENABLED=true` is deliberately supplied with authenticated demo or production credentials. The engine rejects stale books, unknown mappings, invalid sides, requests above the per-order cash-risk cap (default $20,000, lowered with `PMBATTLE_MAX_CASH_RISK`), unsupported strategies, and prices beyond the fee-adjusted cap.
 - Parent creation is serialized under one server lock. The full parent target must fit available Kalshi cash after subtracting unexposed commitments already reserved for managed iceberg/follow parents; a rejected target never reaches the adapter.

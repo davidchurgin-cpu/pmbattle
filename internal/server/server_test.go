@@ -198,7 +198,7 @@ func mutatingRequest(method, path, body string) *http.Request {
 	return request
 }
 
-func TestMutationsRequireRequestHeaderEvenWithoutPassword(t *testing.T) {
+func TestMutationsRequireRequestHeader(t *testing.T) {
 	service := app.New(app.Config{ExchangeEnvironment: "demo", TradingEnabled: true}, nil, nil)
 	handler := New(service, nil).Handler()
 	request := httptest.NewRequest(http.MethodPost, "/api/parent-orders/cancel", bytes.NewBufferString(`{"scope":"all"}`))
@@ -211,75 +211,6 @@ func TestMutationsRequireRequestHeaderEvenWithoutPassword(t *testing.T) {
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/snapshot", nil))
 	if response.Code != http.StatusOK {
-		t.Fatalf("open server without a password should still serve reads: %d", response.Code)
-	}
-}
-
-func TestPasswordProtectsApiAndLoginIssuesSession(t *testing.T) {
-	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
-	handler := New(service, nil).RequirePassword("correct horse battery").Handler()
-
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/snapshot", nil))
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("snapshot without session: status=%d", response.Code)
-	}
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/session", nil))
-	var probe map[string]bool
-	if err := json.NewDecoder(response.Body).Decode(&probe); err != nil || !probe["loginRequired"] || probe["authenticated"] {
-		t.Fatalf("session probe wrong: status=%d probe=%+v err=%v", response.Code, probe, err)
-	}
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, mutatingRequest(http.MethodPost, "/api/login", `{"password":"nope"}`))
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong password accepted: status=%d", response.Code)
-	}
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, mutatingRequest(http.MethodPost, "/api/login", `{"password":"correct horse battery"}`))
-	if response.Code != http.StatusOK {
-		t.Fatalf("login failed: status=%d body=%s", response.Code, response.Body.String())
-	}
-	cookies := response.Result().Cookies()
-	if len(cookies) != 1 || cookies[0].Name != "pmbattle_session" || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
-		t.Fatalf("session cookie missing or weak: %+v", cookies)
-	}
-	request := httptest.NewRequest(http.MethodGet, "/api/snapshot", nil)
-	request.AddCookie(cookies[0])
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("snapshot with session: status=%d", response.Code)
-	}
-	request = mutatingRequest(http.MethodPost, "/api/logout", "")
-	request.AddCookie(cookies[0])
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("logout: status=%d", response.Code)
-	}
-	request = httptest.NewRequest(http.MethodGet, "/api/snapshot", nil)
-	request.AddCookie(cookies[0])
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("session survived logout: status=%d", response.Code)
-	}
-}
-
-func TestLoginIsThrottledAfterRepeatedFailures(t *testing.T) {
-	service := app.New(app.Config{ExchangeEnvironment: "production"}, nil, nil)
-	handler := New(service, nil).RequirePassword("correct horse battery").Handler()
-	for i := 0; i < 5; i++ {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, mutatingRequest(http.MethodPost, "/api/login", `{"password":"guess"}`))
-		if response.Code != http.StatusUnauthorized {
-			t.Fatalf("attempt %d: status=%d", i, response.Code)
-		}
-	}
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, mutatingRequest(http.MethodPost, "/api/login", `{"password":"correct horse battery"}`))
-	if response.Code != http.StatusTooManyRequests {
-		t.Fatalf("sixth attempt was not throttled: status=%d", response.Code)
+		t.Fatalf("reads should not need the header: %d", response.Code)
 	}
 }

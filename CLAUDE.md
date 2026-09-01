@@ -11,7 +11,7 @@ The owner is not a programmer. They describe what they want in plain language an
 1. **Never place, amend, cancel, or resume an order.** Not in production, not in demo, not "just to test". Only the owner does that, in the browser. Do not write scripts, tests, or tools that send real order mutations to Kalshi. The automated tests use a fake exchange adapter and must keep doing so.
 2. **Never enable trading.** Do not set `PMBATTLE_TRADING_ENABLED=true` in any file, script, or environment you control. The owner sets it themselves in their own start script when they are actively testing.
 3. **Never commit secrets.** No `.pem` files, no `.env`, no `pmbattle.db`, no key IDs, no passwords. If you see one in the working tree, stop and tell the owner.
-4. **Never weaken a safety check** to make a test pass or a feature work. Fee caps, cash-risk caps, the startup trading lock, the login, the same-origin checks, and the stale-book refusals are load-bearing.
+4. **Never weaken a safety check** to make a test pass or a feature work. Fee caps, cash-risk caps, the startup trading lock, the request-header and same-origin checks, and the stale-book refusals are load-bearing. The owner has chosen not to have a login; do not add one back unless asked.
 5. **Never rewrite git history** on `main` or on a branch you did not create.
 
 ## How to work

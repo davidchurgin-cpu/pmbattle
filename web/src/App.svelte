@@ -51,39 +51,13 @@
   let auditError = ''
   let theme: 'light' | 'dark' = (localStorage.getItem('pmbattle-theme') as 'light' | 'dark') || 'dark'
   let error = ''
-  let authRequired = false
-  let authenticated = true
-  let loginPassword = ''
-  let loginStatus = ''
-  let loginBusy = false
-  let socket: WebSocket | null = null
 
   const rawFetch = globalThis.fetch.bind(globalThis)
-  // Every API call carries a custom header so a cross-site page cannot forge
-  // requests, and a 401 anywhere sends the user back to the sign-in screen.
-  async function api(input: string, init: RequestInit = {}) {
+  // Every API call carries a custom header so a cross-site page cannot forge requests.
+  function api(input: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers || {})
     headers.set('X-Requested-With', 'PMBattle')
-    const response = await rawFetch(input, { ...init, headers })
-    if (response.status === 401) { authRequired = true; authenticated = false; socket?.close() }
-    return response
-  }
-  async function login() {
-    if (loginBusy) return
-    loginBusy = true; loginStatus = 'Signing in…'
-    try {
-      const response = await api('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: loginPassword }) })
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(payload.error || 'Unable to sign in')
-      loginPassword = ''; loginStatus = ''; authenticated = true
-      await bootstrap()
-    } catch (cause) { loginStatus = cause instanceof Error ? cause.message : 'Unable to sign in' }
-    finally { loginBusy = false }
-  }
-  async function logout() {
-    await api('/api/logout', { method: 'POST' }).catch(() => {})
-    socket?.close(); socket = null
-    authenticated = false; slipOpen = false; trayOpen = false
+    return rawFetch(input, { ...init, headers })
   }
 
   const money = (value: number) => `$${(value / 10000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -342,59 +316,26 @@
   }
   function connect() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const next = new WebSocket(`${protocol}//${location.host}/api/ws`)
-    socket = next
-    next.onmessage = event => applyStream(JSON.parse(event.data))
-    next.onclose = () => {
-      if (socket !== next) return
-      socket = null
-      setTimeout(async () => {
-        if (socket) return
-        try {
-          const state = await (await api('/api/session')).json()
-          if (state.loginRequired && !state.authenticated) { authRequired = true; authenticated = false; return }
-        } catch { /* server unreachable; keep retrying */ }
-        connect()
-      }, 1500)
-    }
-  }
-  async function bootstrap() {
-    error = ''
-    try { const response = await api('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = normalizeSnapshot(await response.json()); snapshot.fills.forEach(fill => seenFillIDs.add(fill.id)); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
+    const socket = new WebSocket(`${protocol}//${location.host}/api/ws`)
+    socket.onmessage = event => applyStream(JSON.parse(event.data))
+    socket.onclose = () => setTimeout(connect, 1500)
   }
   onMount(async () => {
     document.documentElement.dataset.theme = theme
-    try {
-      const state = await (await api('/api/session')).json()
-      authRequired = Boolean(state.loginRequired); authenticated = Boolean(state.authenticated)
-    } catch { authRequired = false; authenticated = true }
-    if (authRequired && !authenticated) return
-    await bootstrap()
+    try { const response = await api('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = normalizeSnapshot(await response.json()); snapshot.fills.forEach(fill => seenFillIDs.add(fill.id)); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
   })
   $: document.documentElement.dataset.theme = theme
 </script>
 
 <svelte:head><title>PMBattle</title><meta name="description" content="Fast sportsbook-style prediction market terminal"></svelte:head>
 
-{#if authRequired && !authenticated}
-<main class="login-page">
-  <form class="login-card" on:submit|preventDefault={login}>
-    <strong class="brand">PMBATTLE</strong>
-    <h1>Sign in</h1>
-    <p>This server asks for the password set in <code>PMBATTLE_PASSWORD</code> before showing markets or accepting orders.</p>
-    <label><span>Password</span><input type="password" autocomplete="current-password" bind:value={loginPassword} disabled={loginBusy} /></label>
-    <button type="submit" disabled={loginBusy || !loginPassword}>{loginBusy ? 'Signing in…' : 'Sign in'}</button>
-    {#if loginStatus}<p class="login-status" role="alert">{loginStatus}</p>{/if}
-  </form>
-</main>
-{:else}
 <div class="app-shell">
   <header class="topbar">
     <strong class="brand">PMBATTLE</strong>
     <nav class="primary-nav" aria-label="Application"><button class:active={view === 'schedule'} on:click={() => view = 'schedule'}>Schedule</button><button class:active={view === 'settings'} on:click={() => view = 'settings'}>Settings</button></nav>
     {#if view === 'schedule'}<label class="search"><span aria-hidden="true">⌕</span><input bind:value={query} aria-label="Search games" placeholder="Search game # or team" /></label>{/if}
     <div class="health" class:is-stale={snapshot.health.status !== 'ok'}><i></i><span>{snapshot.health.mode.toUpperCase()} · {snapshot.health.exchangeState.toUpperCase()}</span></div>
-    <div class="theme"><button class:active={theme === 'light'} on:click={() => setTheme('light')}>Light</button><button class:active={theme === 'dark'} on:click={() => setTheme('dark')}>Dark</button>{#if authRequired}<button class="sign-out" on:click={logout}>Sign out</button>{/if}</div>
+    <div class="theme"><button class:active={theme === 'light'} on:click={() => setTheme('light')}>Light</button><button class:active={theme === 'dark'} on:click={() => setTheme('dark')}>Dark</button></div>
   </header>
   {#if view === 'schedule'}
   <nav class="sports" aria-label="Sport filters">
@@ -568,4 +509,3 @@
     </aside>
   {/if}
 </div>
-{/if}

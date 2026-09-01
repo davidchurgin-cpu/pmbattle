@@ -4,7 +4,7 @@
 
 Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 has basic, iceberg, and controlled follow orders. Limit, post-only, IOC basic orders, limit/post-only icebergs, and post-only follow parents flow through one durable cash-at-risk model into Kalshi's V2 order API. Parent state survives restart and reconciles order-scoped fills, paginated open positions, and settled-market history before the browser receives account activity. Order entry is disabled by default but can now be enabled for demo or production.
 
-September 1, 2026 hardening (branch `claude/code-review-assessment-t8xog4`): a `CLAUDE.md` brief for AI sessions, corrected live/demo safety labels, a `PMBATTLE_MAX_CASH_RISK` per-order cap, a `PMBATTLE_PASSWORD` sign-in that is mandatory whenever trading is enabled, a request-header check against cross-site request forgery, amend responses that may carry a replacement order ID, and `FIRST-LIVE-ORDER.md`, the owner's step-by-step script for the first real order. The owner is not a programmer and places every order personally in the browser; no AI session may place, amend, cancel, or resume orders.
+September 1, 2026 hardening (branch `claude/code-review-assessment-t8xog4`): a `CLAUDE.md` brief for AI sessions, corrected live/demo safety labels, a `PMBATTLE_MAX_CASH_RISK` per-order cap, a request-header check against cross-site request forgery (a password sign-in was also built, then removed at the owner's request), amend responses that may carry a replacement order ID, and `FIRST-LIVE-ORDER.md`, the owner's step-by-step script for the first real order. The owner is not a programmer and places every order personally in the browser; no AI session may place, amend, cancel, or resume orders.
 
 ## Architecture
 
@@ -26,9 +26,6 @@ September 1, 2026 hardening (branch `claude/code-review-assessment-t8xog4`): a `
 
 ## Browser API
 
-- `GET /api/session` — `{loginRequired, authenticated}`; always reachable so the page knows whether to show the sign-in screen
-- `POST /api/login` — `{password}`; sets the `pmbattle_session` cookie (HTTP-only, same-site strict, 12 hours); five failures from one address lock sign-in for 15 minutes
-- `POST /api/logout` — ends the session
 - `GET /api/health` — service and feed state
 - `GET /api/snapshot` — events, open positions, recent settlements, managed orders, bankroll, and health
 - `GET /api/books/{ticker}` — select the UI order book; returns `202` while its first live snapshot is opening
@@ -44,9 +41,9 @@ September 1, 2026 hardening (branch `claude/code-review-assessment-t8xog4`): a `
 - `POST /api/parent-orders/{id}/resume` — manually resume an error-paused follow parent after fresh-book revalidation; locked when server trading is disabled
 - `GET /api/ws` — compact live events: `schedule`, `account_snapshot` (including settlements), `health`, `ticker`, `orderbook`, `book_stale`, `fill`, `parent_order`, `order`, `position`, and `market_lifecycle`
 
-Every non-GET `/api` request must carry `X-Requested-With: PMBattle`, or it is rejected with 403 before any handler runs; the browser helper `api()` in `App.svelte` adds it to every call. When `PMBATTLE_PASSWORD` is set, every `/api` route except `session` and `login` (the stream included) returns 401 without a valid session cookie, and the page shows a sign-in screen. Static files are always served so the page can render that screen.
+Every non-GET `/api` request must carry `X-Requested-With: PMBattle`, or it is rejected with 403 before any handler runs (`internal/server/guard.go`); the browser helper `api()` in `App.svelte` adds it to every call. There is no login: a password sign-in was built on September 1 and removed the same day at the owner's request, so the network allowlist is the only access gate.
 
-Mutation routes are inert by default. Set `PMBATTLE_SIMULATED=false`, choose `PMBATTLE_KALSHI_ENV=demo` or `production`, set `PMBATTLE_PASSWORD` (8+ characters; the server refuses to start with trading on and no password), and set `PMBATTLE_TRADING_ENABLED=true` to enable them. The Kalshi client receives the same startup flag and independently rejects place, amend, and cancel calls when it is off. Production submissions receive an explicit browser confirmation and are labeled `REAL ORDERS` / `LIVE TRADING`.
+Mutation routes are inert by default. Set `PMBATTLE_SIMULATED=false`, choose `PMBATTLE_KALSHI_ENV=demo` or `production`, and set `PMBATTLE_TRADING_ENABLED=true` to enable them. The Kalshi client receives the same startup flag and independently rejects place, amend, and cancel calls when it is off. Production submissions receive an explicit browser confirmation and are labeled `REAL ORDERS` / `LIVE TRADING`.
 
 ## Running the project
 
@@ -75,8 +72,7 @@ Open `http://127.0.0.1:8080/`. Use `PMBATTLE_TRADING_ENABLED=false` for read-onl
 
 ## Important operational details
 
-- The office server's existing IP allowlist remains the outer boundary, and `PMBATTLE_PASSWORD` is the inner one. PMBattle should sit behind the normal TLS/reverse-proxy setup; the session cookie is marked Secure automatically when the request arrived over TLS or with `X-Forwarded-Proto: https`.
-- `internal/server/auth.go` owns sign-in: SHA-256 digest compared in constant time, random 32-byte session tokens kept in memory (a restart signs everyone out), a per-address failure window, and the request-header check for every mutating call.
+- The office server's existing IP allowlist is the access boundary; anyone who can reach the port can place orders while trading is enabled. PMBattle should sit behind its normal TLS/reverse-proxy setup.
 - The Settings safety panel is informational only and cannot arm trading. It surfaces environment, feed/account sync, last account refresh, mapped markets, available cash, cash at risk, and the immutable startup lock reason. When trading is enabled, its note and the Orders-tray kill switch label now say whether real production orders or demo orders are armed; an earlier version wrongly said production was still blocked.
 - History separates exchange settlements from System audit. Audit records are never included in the startup snapshot or WebSocket stream; opening that subview requests the newest 100 records, and Load earlier follows the opaque numeric cursor. Each row has a compact lifecycle summary and a collapsible exact JSON payload.
 - Use a dedicated server directory for `pmbattle.db` and back it up normally.
