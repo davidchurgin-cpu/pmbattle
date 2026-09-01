@@ -106,6 +106,8 @@ PMBATTLE_TRADING_ENABLED=false
 
 Demo and production credentials are different. Never commit private keys, `.env`, databases, or server secrets. `PMBATTLE_TRADING_ENABLED` defaults to `false`. To test real orders manually, use production credentials with `PMBATTLE_KALSHI_ENV=production`, `PMBATTLE_SIMULATED=false`, and `PMBATTLE_TRADING_ENABLED=true`, then restart PMBattle. The interface clearly labels real-order mode and asks for confirmation before each production submission. The adapter still rejects mutations unless trading was enabled at startup. Follow [FIRST-LIVE-ORDER.md](FIRST-LIVE-ORDER.md) for the first real order; it walks through a small order that is canceled before it fills, then one that fills, and how to lock trading again.
 
+On Windows, `start-live-100.bat` is the owner-run launcher for production trading across all mapped markets with a hard `$100` cash-risk cap per order. It reads `api key.txt` and `private key.txt` from `%USERPROFILE%\Desktop\kalshi.env` by default and never stores secret values in Git. Run `start-live-100.bat --check` to validate the files without starting PMBattle. Stop any existing PMBattle server on port 8080 before double-clicking the launcher.
+
 ### Using another PC
 
 GitHub carries the application code, but deliberately does not carry credentials. On each PC or server:

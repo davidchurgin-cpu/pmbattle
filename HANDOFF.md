@@ -90,7 +90,7 @@ $env:PMBATTLE_TRADING_ENABLED = "false"
 .\pmbattle.exe
 ```
 
-Only the owner arms order entry, by setting `PMBATTLE_TRADING_ENABLED` to `true` in their own start script alongside a small `PMBATTLE_MAX_CASH_RISK` (the checklist uses `5`). `FIRST-LIVE-ORDER.md` has the full script. No AI session sets that flag.
+Only the owner arms order entry. On Windows, `start-live-100.bat` starts production trading across all mapped markets with `PMBATTLE_MAX_CASH_RISK=100`, loads credentials from `%USERPROFILE%\Desktop\kalshi.env`, and pauses before launch. Its `--check` option validates the executable and credential files without starting the server. It does not stop an existing server automatically, so port 8080 must be free first. `FIRST-LIVE-ORDER.md` provides the manual test checklist. No AI session runs the live launcher or sets the trading flag.
 
 Open `http://127.0.0.1:8080/`. Credentials and private keys stay outside Git and must be configured separately on every computer. Linux uses the same environment names and `go build -o pmbattle .`; portable Windows/Linux artifacts are also published by GitHub Actions.
 
