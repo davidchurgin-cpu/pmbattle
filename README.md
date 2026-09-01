@@ -17,6 +17,7 @@ The production connection is deliberately **read-only**. The terminal includes t
 - On-demand order-book subscriptions: PMBattle loads only the selected market, releases it when closed, and never streams every game unnecessarily
 - Clickable Yes/No bid and ask levels that populate a floating bottom order slip with the exact price, cash-at-risk field, fee-adjusted cap, and basic/iceberg/follow controls
 - Demo-only basic limit, post-only, IOC, and cancel commands sized from a parent cash-risk target with a hard fee-adjusted moneyline cap
+- Demo-only iceberg parents that expose one configurable slice, refresh only after the active slice is completely filled, and cancel only the currently working slice
 - Current Kalshi V2 fixed-point order requests, including correct NO-to-YES-book conversion and idempotent client order IDs
 - Durable parent orders that survive restart, deduplicate fills, and reduce remaining risk before fill notifications reach the browser
 - Order-scoped REST fill recovery after startup and account-stream reconnects, plus the authenticated read-only available bankroll
@@ -100,6 +101,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - Account activity stays connected independently from the on-demand order book, so orders and fills remain live while no game is expanded.
 - Historical fills load quietly at startup; only new authenticated fill events create alerts, preventing notification spam after reconnects.
 - A partial fill remains counted as cash at risk while its open-order reservation is reduced; canceling the remainder does not erase the risk already held in the resulting position.
+- Iceberg refresh failures pause the parent without creating a phantom child. Duplicate fills cannot refresh twice, and fee-rounding changes shrink future quantity before allowing the parent to exceed its cash-risk target.
 - The UI clearly identifies simulated/live mode and stale data.
 - Credentials never pass through the browser.
 - The server enforces same-origin browser WebSockets and basic security headers.

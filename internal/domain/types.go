@@ -139,29 +139,41 @@ type Order struct {
 }
 
 type ParentOrder struct {
-	ID                string    `json:"id"`
-	Exchange          string    `json:"exchange"`
-	EventID           string    `json:"eventId"`
-	Ticker            string    `json:"ticker"`
-	Rotation          string    `json:"rotation,omitempty"`
-	Outcome           string    `json:"outcome"`
-	Market            string    `json:"market"`
-	Side              string    `json:"side"`
-	Strategy          string    `json:"strategy"`
-	Policy            string    `json:"policy"`
-	Status            string    `json:"status"`
-	CashRiskTarget    Money     `json:"cashRiskTarget"`
-	ReservedRisk      Money     `json:"reservedRisk"`
-	FilledRisk        Money     `json:"filledRisk"`
-	RemainingRisk     Money     `json:"remainingRisk"`
-	PriceCapMoneyline int64     `json:"priceCapMoneyline"`
-	LimitPrice        Money     `json:"limitPrice"`
-	Quantity          Money     `json:"quantity"`
-	FilledQuantity    Money     `json:"filledQuantity"`
-	ChildOrderIDs     []string  `json:"childOrderIds"`
-	ProcessedFillIDs  []string  `json:"processedFillIds,omitempty"`
-	CreatedAt         time.Time `json:"createdAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	ID                string            `json:"id"`
+	Exchange          string            `json:"exchange"`
+	EventID           string            `json:"eventId"`
+	Ticker            string            `json:"ticker"`
+	Rotation          string            `json:"rotation,omitempty"`
+	Outcome           string            `json:"outcome"`
+	Market            string            `json:"market"`
+	Side              string            `json:"side"`
+	Strategy          string            `json:"strategy"`
+	Policy            string            `json:"policy"`
+	Status            string            `json:"status"`
+	CashRiskTarget    Money             `json:"cashRiskTarget"`
+	ReservedRisk      Money             `json:"reservedRisk"`
+	FilledRisk        Money             `json:"filledRisk"`
+	RemainingRisk     Money             `json:"remainingRisk"`
+	PriceCapMoneyline int64             `json:"priceCapMoneyline"`
+	LimitPrice        Money             `json:"limitPrice"`
+	Quantity          Money             `json:"quantity"`
+	FilledQuantity    Money             `json:"filledQuantity"`
+	SliceQuantity     Money             `json:"sliceQuantity,omitempty"`
+	ChildOrderIDs     []string          `json:"childOrderIds"`
+	Children          []ChildOrderState `json:"children,omitempty"`
+	ProcessedFillIDs  []string          `json:"processedFillIds,omitempty"`
+	CreatedAt         time.Time         `json:"createdAt"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+}
+
+type ChildOrderState struct {
+	ID             string    `json:"id"`
+	ClientOrderID  string    `json:"clientOrderId"`
+	Status         string    `json:"status"`
+	Quantity       Money     `json:"quantity"`
+	FilledQuantity Money     `json:"filledQuantity"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 }
 
 type Position struct {

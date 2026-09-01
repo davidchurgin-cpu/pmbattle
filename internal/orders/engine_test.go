@@ -3,6 +3,7 @@ package orders
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/davidchurgin-cpu/pmbattle/internal/domain"
@@ -11,15 +12,23 @@ import (
 )
 
 type fakeExecutor struct {
-	placed   exchange.PlaceOrderRequest
-	canceled string
+	placed    []exchange.PlaceOrderRequest
+	canceled  []string
+	failPlace int
 }
 
 func (f *fakeExecutor) PlaceOrder(_ context.Context, request exchange.PlaceOrderRequest) (domain.Order, error) {
-	f.placed = request
-	return domain.Order{ID: "child-1", Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide, Status: "resting", Quantity: request.Quantity, LimitPrice: request.LimitPrice}, nil
+	f.placed = append(f.placed, request)
+	if f.failPlace > 0 && len(f.placed) >= f.failPlace {
+		return domain.Order{}, errors.New("exchange unavailable")
+	}
+	id := fmt.Sprintf("child-%d", len(f.placed))
+	return domain.Order{ID: id, Exchange: "Kalshi", Ticker: request.Ticker, Side: request.OutcomeSide, Status: "resting", Quantity: request.Quantity, LimitPrice: request.LimitPrice}, nil
 }
-func (f *fakeExecutor) CancelOrder(_ context.Context, id string) error { f.canceled = id; return nil }
+func (f *fakeExecutor) CancelOrder(_ context.Context, id string) error {
+	f.canceled = append(f.canceled, id)
+	return nil
+}
 
 func validRequest() CreateRequest {
 	return CreateRequest{EventID: "1234", Ticker: "KXTEST", Outcome: "Over", Market: "total", Side: "yes", Strategy: "basic", Policy: "limit", CashRisk: 5_000 * domain.Dollar, PriceCapMoneyline: -107, LimitPrice: 5000}
@@ -35,7 +44,7 @@ func TestCreateBasicOrderNeverExceedsCashRisk(t *testing.T) {
 	if parent.ReservedRisk > parent.CashRiskTarget {
 		t.Fatalf("reserved risk %d exceeds target %d", parent.ReservedRisk, parent.CashRiskTarget)
 	}
-	if child.ID != "child-1" || executor.placed.ClientOrderID != parent.ID {
+	if child.ID != "child-1" || executor.placed[0].ClientOrderID != parent.ID {
 		t.Fatalf("parent/child linkage missing: parent=%+v child=%+v request=%+v", parent, child, executor.placed)
 	}
 	nextQuote, err := pricing.Quote(parent.LimitPrice, parent.Quantity+1, false)
@@ -45,7 +54,7 @@ func TestCreateBasicOrderNeverExceedsCashRisk(t *testing.T) {
 	if _, err := engine.Cancel(context.Background(), parent.ID); err != nil {
 		t.Fatal(err)
 	}
-	if executor.canceled != child.ID {
+	if len(executor.canceled) != 1 || executor.canceled[0] != child.ID {
 		t.Fatalf("canceled %q, want %q", executor.canceled, child.ID)
 	}
 }
@@ -60,7 +69,7 @@ func TestEngineIsHardDisabled(t *testing.T) {
 func TestRejectsUnsupportedStrategyAndPriceCap(t *testing.T) {
 	engine := New(true, &fakeExecutor{})
 	request := validRequest()
-	request.Strategy = "iceberg"
+	request.Strategy = "follow"
 	if _, _, err := engine.Create(context.Background(), request); !errors.Is(err, ErrUnsupportedStrategy) {
 		t.Fatalf("got %v, want unsupported strategy", err)
 	}
@@ -126,5 +135,118 @@ func TestOrderSnapshotDoesNotDoubleCountReplayedFills(t *testing.T) {
 	updated, ok := engine.ApplyFill(domain.Fill{ID: "fill-1", OrderID: "child-1", Quantity: 10 * domain.Dollar, CashRisk: fillQuote.AllInCost})
 	if !ok || updated.FilledQuantity != 10*domain.Dollar {
 		t.Fatalf("filled quantity was double-counted: %+v", updated)
+	}
+}
+
+func TestIcebergExposesOneSliceAndRefreshesOnlyAfterFullSlice(t *testing.T) {
+	executor := &fakeExecutor{}
+	engine := New(true, executor)
+	request := validRequest()
+	request.Strategy = "iceberg"
+	request.Policy = "post_only"
+	request.SliceQuantity = 25 * domain.Dollar
+	parent, firstChild, err := engine.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstChild.Quantity != request.SliceQuantity || parent.Quantity <= firstChild.Quantity || len(parent.Children) != 1 || len(executor.placed) != 1 {
+		t.Fatalf("iceberg exposed wrong initial state: parent=%+v child=%+v placements=%+v", parent, firstChild, executor.placed)
+	}
+	partialQuote, _ := pricing.Quote(parent.LimitPrice, 10*domain.Dollar, false)
+	partial := domain.Fill{ID: "fill-1", OrderID: firstChild.ID, Quantity: 10 * domain.Dollar, CashRisk: partialQuote.AllInCost}
+	updated, refreshed, matched, err := engine.HandleFill(context.Background(), partial)
+	if err != nil || !matched || refreshed != nil || len(executor.placed) != 1 || updated.Children[0].Status != "partially_filled" {
+		t.Fatalf("partial fill refreshed early: parent=%+v child=%+v matched=%v err=%v placements=%d", updated, refreshed, matched, err, len(executor.placed))
+	}
+	restQuote, _ := pricing.Quote(parent.LimitPrice, 15*domain.Dollar, false)
+	rest := domain.Fill{ID: "fill-2", OrderID: firstChild.ID, Quantity: 15 * domain.Dollar, CashRisk: restQuote.AllInCost}
+	updated, refreshed, matched, err = engine.HandleFill(context.Background(), rest)
+	if err != nil || !matched || refreshed == nil || refreshed.ID != "child-2" || refreshed.Quantity != request.SliceQuantity || len(executor.placed) != 2 || len(updated.Children) != 2 || updated.Children[0].Status != "filled" {
+		t.Fatalf("full slice did not refresh exactly once: parent=%+v child=%+v matched=%v err=%v placements=%+v", updated, refreshed, matched, err, executor.placed)
+	}
+	if updated.FilledRisk+updated.ReservedRisk > updated.CashRiskTarget {
+		t.Fatalf("iceberg exceeded risk target: filled=%d reserved=%d target=%d", updated.FilledRisk, updated.ReservedRisk, updated.CashRiskTarget)
+	}
+	if _, duplicateChild, duplicateMatched, duplicateErr := engine.HandleFill(context.Background(), rest); duplicateErr != nil || duplicateMatched || duplicateChild != nil || len(executor.placed) != 2 {
+		t.Fatalf("duplicate fill refreshed another slice: child=%+v matched=%v err=%v placements=%d", duplicateChild, duplicateMatched, duplicateErr, len(executor.placed))
+	}
+	canceled, err := engine.Cancel(context.Background(), parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canceled.Status != "canceled" || len(executor.canceled) != 1 || executor.canceled[0] != "child-2" {
+		t.Fatalf("cancel touched wrong slices: parent=%+v canceled=%v", canceled, executor.canceled)
+	}
+}
+
+func TestIcebergRefreshFailurePausesWithoutPhantomChild(t *testing.T) {
+	executor := &fakeExecutor{failPlace: 2}
+	engine := New(true, executor)
+	request := validRequest()
+	request.Strategy = "iceberg"
+	request.Policy = "post_only"
+	request.SliceQuantity = 10 * domain.Dollar
+	parent, child, err := engine.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fillQuote, _ := pricing.Quote(parent.LimitPrice, child.Quantity, false)
+	updated, refreshed, matched, err := engine.HandleFill(context.Background(), domain.Fill{ID: "fill-1", OrderID: child.ID, Quantity: child.Quantity, CashRisk: fillQuote.AllInCost})
+	if err == nil || !matched || refreshed != nil || updated.Status != "paused" || len(updated.Children) != 1 {
+		t.Fatalf("refresh failure was not safely paused: parent=%+v child=%+v matched=%v err=%v", updated, refreshed, matched, err)
+	}
+}
+
+func TestIcebergRequiresSliceAndRejectsIOC(t *testing.T) {
+	engine := New(true, &fakeExecutor{})
+	request := validRequest()
+	request.Strategy = "iceberg"
+	if _, _, err := engine.Create(context.Background(), request); !errors.Is(err, ErrInvalidOrder) {
+		t.Fatalf("missing slice got %v", err)
+	}
+	request.SliceQuantity = 10 * domain.Dollar
+	request.Policy = "ioc"
+	if _, _, err := engine.Create(context.Background(), request); !errors.Is(err, ErrInvalidOrder) {
+		t.Fatalf("iceberg IOC got %v", err)
+	}
+}
+
+func TestUnexpectedFillCostCancelsOutstandingChildBeforeRiskBreach(t *testing.T) {
+	executor := &fakeExecutor{}
+	engine := New(true, executor)
+	request := validRequest()
+	request.CashRisk = 100 * domain.Dollar
+	parent, child, err := engine.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fill := domain.Fill{ID: "fill-1", OrderID: child.ID, Quantity: domain.Dollar, CashRisk: parent.CashRiskTarget - domain.Dollar}
+	updated, refreshed, matched, err := engine.HandleFill(context.Background(), fill)
+	if err != nil || !matched || refreshed != nil || updated.Status != "risk_capped" || updated.ReservedRisk != 0 || len(executor.canceled) != 1 || executor.canceled[0] != child.ID {
+		t.Fatalf("risk breach was not capped: parent=%+v child=%+v matched=%v canceled=%v err=%v", updated, refreshed, matched, executor.canceled, err)
+	}
+	if updated.FilledRisk+updated.ReservedRisk > updated.CashRiskTarget {
+		t.Fatalf("risk exceeded target: %+v", updated)
+	}
+}
+
+func TestLateFillAfterIcebergCancelUpdatesRiskWithoutRestart(t *testing.T) {
+	executor := &fakeExecutor{}
+	engine := New(true, executor)
+	request := validRequest()
+	request.Strategy = "iceberg"
+	request.Policy = "post_only"
+	request.SliceQuantity = 10 * domain.Dollar
+	parent, child, err := engine.Create(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Cancel(context.Background(), parent.ID); err != nil {
+		t.Fatal(err)
+	}
+	fillQuote, _ := pricing.Quote(parent.LimitPrice, child.Quantity, false)
+	updated, refreshed, matched, err := engine.HandleFill(context.Background(), domain.Fill{ID: "late-fill", OrderID: child.ID, Quantity: child.Quantity, CashRisk: fillQuote.AllInCost})
+	if err != nil || !matched || refreshed != nil || updated.Status != "canceled" || updated.FilledRisk != fillQuote.AllInCost || len(executor.placed) != 1 || len(executor.canceled) != 1 {
+		t.Fatalf("late fill restarted canceled iceberg: parent=%+v child=%+v matched=%v placed=%d canceled=%d err=%v", updated, refreshed, matched, len(executor.placed), len(executor.canceled), err)
 	}
 }

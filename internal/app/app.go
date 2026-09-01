@@ -197,6 +197,16 @@ func (s *Service) CancelParentOrder(ctx context.Context, id string) (domain.Pare
 	}
 	parent, err := s.orderEngine.Cancel(ctx, id)
 	if err != nil {
+		if parent.ID != "" {
+			s.mu.Lock()
+			s.upsertParentLocked(parent)
+			s.recalculateParentRiskLocked()
+			s.mu.Unlock()
+			if saveErr := s.store.SaveParentOrder(ctx, parent); saveErr != nil {
+				slog.Error("persist partially canceled parent order", "parent_id", parent.ID, "error", saveErr)
+			}
+			s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
+		}
 		_ = s.store.Audit(ctx, "parent_order_cancel_failed", map[string]any{"id": id, "error": err.Error()})
 		return domain.ParentOrder{}, err
 	}
@@ -819,7 +829,7 @@ func (s *Service) applyFill(fill domain.Fill, publish bool) bool {
 	if duplicate {
 		return false
 	}
-	parent, reconciled := s.orderEngine.ApplyFill(fill)
+	parent, refreshedChild, reconciled, strategyErr := s.orderEngine.HandleFill(context.Background(), fill)
 	if !reconciled {
 		parent, _ = s.orderEngine.ParentForChild(fill.OrderID)
 	}
@@ -830,16 +840,34 @@ func (s *Service) applyFill(fill domain.Fill, publish bool) bool {
 		fill.Market = parent.Market
 	}
 	if reconciled {
+		if refreshedChild != nil {
+			refreshedChild.Rotation = parent.Rotation
+			refreshedChild.Market = parent.Market
+		}
 		s.mu.Lock()
 		s.upsertParentLocked(parent)
+		if refreshedChild != nil {
+			s.upsertOrderLocked(*refreshedChild)
+		}
 		s.recalculateParentRiskLocked()
 		s.mu.Unlock()
 		if err := s.store.SaveParentOrder(context.Background(), parent); err != nil {
 			slog.Error("persist fill-reconciled parent order", "parent_id", parent.ID, "fill_id", fill.ID, "error", err)
 		}
-		_ = s.store.Audit(context.Background(), "parent_order_fill_reconciled", map[string]any{"parent": parent, "fill": fill})
+		reconciliation := map[string]any{"parent": parent, "fill": fill}
+		if refreshedChild != nil {
+			reconciliation["refreshed_child"] = refreshedChild
+		}
+		if strategyErr != nil {
+			reconciliation["strategy_error"] = strategyErr.Error()
+			slog.Warn("parent strategy paused after fill", "parent_id", parent.ID, "fill_id", fill.ID, "error", strategyErr)
+		}
+		_ = s.store.Audit(context.Background(), "parent_order_fill_reconciled", reconciliation)
 		if publish {
 			s.broadcast(domain.StreamEvent{Type: "parent_order", Data: parent})
+			if refreshedChild != nil {
+				s.broadcast(domain.StreamEvent{Type: "order", Data: *refreshedChild})
+			}
 		}
 	}
 	s.mu.Lock()

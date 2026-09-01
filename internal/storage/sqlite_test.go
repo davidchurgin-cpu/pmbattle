@@ -50,7 +50,7 @@ func TestParentOrdersRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	want := domain.ParentOrder{ID: "parent-1", Ticker: "TEST", Side: "yes", Status: "partially_filled", CashRiskTarget: 5_000 * domain.Dollar, FilledRisk: 500 * domain.Dollar, RemainingRisk: 4_500 * domain.Dollar, ChildOrderIDs: []string{"child-1"}, ProcessedFillIDs: []string{"fill-1"}, UpdatedAt: time.Now().UTC()}
+	want := domain.ParentOrder{ID: "parent-1", Ticker: "TEST", Side: "yes", Strategy: "iceberg", Status: "partially_filled", CashRiskTarget: 5_000 * domain.Dollar, FilledRisk: 500 * domain.Dollar, RemainingRisk: 4_500 * domain.Dollar, SliceQuantity: 25 * domain.Dollar, ChildOrderIDs: []string{"child-1"}, Children: []domain.ChildOrderState{{ID: "child-1", Status: "partially_filled", Quantity: 25 * domain.Dollar, FilledQuantity: 10 * domain.Dollar}}, ProcessedFillIDs: []string{"fill-1"}, UpdatedAt: time.Now().UTC()}
 	if err := store.SaveParentOrder(context.Background(), want); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestParentOrdersRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].ID != want.ID || got[0].RemainingRisk != want.RemainingRisk || len(got[0].ProcessedFillIDs) != 1 {
+	if len(got) != 1 || got[0].ID != want.ID || got[0].RemainingRisk != want.RemainingRisk || got[0].SliceQuantity != want.SliceQuantity || len(got[0].Children) != 1 || got[0].Children[0].FilledQuantity != 10*domain.Dollar || len(got[0].ProcessedFillIDs) != 1 {
 		t.Fatalf("unexpected parents %+v", got)
 	}
 }

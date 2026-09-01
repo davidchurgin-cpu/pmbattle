@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 now has a guarded basic-order vertical slice: limit, post-only, IOC, and cancel flow through one durable cash-at-risk parent order into Kalshi's V2 demo order API. Parent state survives restart and reconciles order-scoped fill history before the browser receives fill activity. Simulated mode and production connections remain read-only by default.
+Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 now has guarded basic and iceberg order slices. Limit, post-only, IOC basic orders and limit/post-only icebergs flow through one durable cash-at-risk parent model into Kalshi's V2 demo order API. Parent state survives restart and reconciles order-scoped fill history before the browser receives fill activity. Simulated mode and production connections remain read-only by default.
 
 ## Architecture
 
@@ -51,6 +51,8 @@ The mutation routes are present for demo validation but are inert by default. St
 - REST and WebSocket orders are decoded from Kalshi's current `*_dollars` and `*_count_fp` fields into fixed-point internal values. This is required for reliable remaining-quantity and cash-risk monitoring.
 - Demo orders use Kalshi's current `/portfolio/events/orders` V2 shape. Buying NO is emitted as an ask at the complementary YES-book price. Counts and prices remain four-decimal fixed-point strings.
 - Parent sizing uses the conservative taker fee even for post-only orders. A binary search selects the greatest fractional contract quantity whose all-in cost does not exceed the cash-risk target; large low-price calculations use overflow-safe integer arithmetic.
+- An iceberg persists every child ID, client ID, quantity, fill quantity, and lifecycle state. Only one nonterminal slice is exposed at once. Partial fills retain that slice; a full slice creates exactly one replacement capped by both the configured slice and remaining fee-inclusive risk.
+- Refresh errors pause the parent, duplicate fill IDs never refresh again, cancellation skips terminal slices, and per-fill fee rounding can shrink the remaining parent quantity. If a partially filled working child would exceed remaining risk, the demo engine cancels it before publishing the fill. A late fill received after cancellation still updates filled risk but cannot restart or re-cancel the strategy.
 - Every fill carries its exchange order ID. The engine applies each fill ID once, updates filled quantity/risk, reduces the remaining reservation, persists the parent, and only then publishes the parent followed by the fill. Filled risk remains included in the station-wide cash-at-risk total.
 - Startup and account-stream reconnects query Kalshi fill history by PMBattle child order ID and replay it oldest-first. The initial `account_snapshot` refresh is quiet so recovered fills do not look like new live alerts.
 - The account snapshot also reads Kalshi's available balance in cents and converts it into PMBattle's four-decimal fixed-point bankroll without floating-point math.
@@ -64,7 +66,7 @@ The mutation routes are present for demo validation but are inert by default. St
 - Kalshi live order authentication and on-demand book streaming have been validated read-only against a production account. Validation mapped 2,240 contracts into 441 selectable game/strike books; a requested book moved from `202` to a synchronized live ladder, switching tickers opened only the replacement stream, and release returned `204`. Position/fill historical REST reconciliation remains the next account-data task.
 - Initial league-to-series routing covers the major US leagues plus selected top soccer leagues. Add aliases as new schedule leagues are enabled; unknown leagues intentionally load no Kalshi series.
 - The current general Kalshi fee rule is versioned in one module, but market-specific fee exceptions must be added before any production order preview.
-- Iceberg and follow controls remain visible previews but are rejected by the engine until their lifecycle logic is implemented.
+- Follow-the-book remains a visible preview and is rejected by the engine until its throttled replace lifecycle is implemented.
 - Completed parents are retained in SQLite without pruning yet. A retention policy will be needed as history grows.
 - REST position history and settlements are not yet part of restart reconciliation; live position WebSocket updates are implemented.
 - Production mutation is intentionally impossible and must remain so unless a separate review is completed and the user explicitly authorizes real-money trading.
@@ -74,7 +76,7 @@ The mutation routes are present for demo validation but are inert by default. St
 
 1. Add REST position and settlement reconciliation with recorded fixtures.
 2. Add cancel/replace while preserving the parent cash-risk reservation and price cap.
-3. Add iceberg slicing and throttled join-the-top behavior without automatic spread crossing.
+3. Add throttled join-the-top behavior without automatic spread crossing.
 4. Add event, strategy, exchange, and global demo cancel controls.
 5. Validate the complete flow manually with separate Kalshi demo credentials, without sending any production mutation.
 6. Keep production blocked until demo fees, partial fills, reconnect recovery, and risk totals match Kalshi reports and the user explicitly authorizes a later real-money milestone.
