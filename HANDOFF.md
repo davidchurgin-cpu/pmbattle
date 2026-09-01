@@ -4,7 +4,27 @@
 
 Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 has basic, iceberg, and controlled follow orders. Limit, post-only, IOC basic orders, limit/post-only icebergs, and post-only follow parents flow through one durable cash-at-risk model into Kalshi's V2 order API. Parent state survives restart and reconciles order-scoped fills, paginated open positions, and settled-market history before the browser receives account activity. Order entry is disabled by default but can now be enabled for demo or production.
 
-September 1, 2026 hardening (merged to `main` the same day): a `CLAUDE.md` brief for AI sessions, corrected live/demo safety labels, a `PMBATTLE_MAX_CASH_RISK` per-order cap, a request-header check against cross-site request forgery (a password sign-in was also built, then removed at the owner's request), amend responses that may carry a replacement order ID, and `FIRST-LIVE-ORDER.md`, the owner's step-by-step script for the first real order. The owner is not a programmer and places every order personally in the browser; no AI session may place, amend, cancel, or resume orders.
+**Where the project actually stands.** The read-only terminal is proven against production. The order path is not: on September 1, 2026 the owner's first real order reached Kalshi and was **rejected** for count precision. That bug is fixed but the retry has not happened yet, so **no order has ever been accepted by Kalshi through PMBattle**. Everything about placing orders should still be treated as unproven.
+
+The owner is not a programmer and places every order personally in the browser. No AI session may place, amend, cancel, or resume an order.
+
+### Session log: September 1, 2026 (all merged to `main`, CI green)
+
+Eleven commits, oldest first. `git log --oneline 99eb1c4..0adbc50` reproduces this list.
+
+| Commit | What changed and why |
+| --- | --- |
+| `310299b` | Added `CLAUDE.md` so every AI session starts with the same rules: read the handoff, run the tests, never commit secrets, never enable trading, never place an order. |
+| `4fbbefa` | Safety labels lied in production: Settings said demo mutations were on and production blocked, and the kill switch was labelled "Demo". Both now state the live mode. |
+| `6819e90` | Added `PMBATTLE_MAX_CASH_RISK`, a per-order dollar ceiling (1–20000) that only lowers the built-in $20,000 limit. Enforced in the engine, published in health, blocked in the order slip. |
+| `3662799` | Added a password sign-in and a cross-site request-forgery guard. |
+| `b221907` | Kalshi's amend endpoint is documented as returning `{old_order, order}` where the new order may carry a **different order_id**. The client decodes both response shapes and the follow engine adopts the replacement ID for fills, cancels and risk, keeping the old ID listed for late fills. |
+| `183a952` | Wrote `FIRST-LIVE-ORDER.md`, the owner's browser checklist for the first real order. |
+| `3ebb4b6` | **Removed the password sign-in at the owner's request.** The request-header guard stayed. The network allowlist is the only access gate again. |
+| `3917acc` | Merged the branch to `main` so a plain clone gets everything. |
+| `270c08a` | **The live rejection fix.** See "Kalshi API verification status". |
+| `5e0e7a2` | Saving preferences restarts the exchange loop, which caused `SQLITE_BUSY` and a blank Available figure. SQLite settings now travel on the connection string, an interrupted reconcile stays silent, and the restart reconciles the account before the slow market refresh. |
+| `0adbc50` | Replaced raw Kalshi tickers in Positions/Orders/Fills/History with the game and the bet. See "Readable account rows". |
 
 ## Architecture
 
@@ -57,18 +77,22 @@ cd ..
 go build -o pmbattle.exe .
 ```
 
-For Windows PowerShell production testing, configure the machine-local credentials and start the executable:
+**Rebuild both halves after every `git pull`.** The executable embeds `web/dist`, so skipping `npm run build` ships a stale browser page, and skipping `go build` runs stale server code. This has already caused confusion once.
+
+Read-only is the normal way to run it. Windows PowerShell, with the owner's machine-local credentials:
 
 ```powershell
 $env:PMBATTLE_KALSHI_ENV = "production"
 $env:PMBATTLE_KALSHI_KEY_ID = "your-key-id"
 $env:PMBATTLE_KALSHI_PRIVATE_KEY_PATH = "C:\secure\kalshi-private-key.pem"
 $env:PMBATTLE_SIMULATED = "false"
-$env:PMBATTLE_TRADING_ENABLED = "true"
+$env:PMBATTLE_TRADING_ENABLED = "false"
 .\pmbattle.exe
 ```
 
-Open `http://127.0.0.1:8080/`. Use `PMBATTLE_TRADING_ENABLED=false` for read-only operation. Credentials and private keys stay outside Git and must be configured separately on every computer. Linux uses the same environment names and `go build -o pmbattle .`; portable Windows/Linux artifacts are also published by GitHub Actions.
+Only the owner arms order entry, by setting `PMBATTLE_TRADING_ENABLED` to `true` in their own start script alongside a small `PMBATTLE_MAX_CASH_RISK` (the checklist uses `5`). `FIRST-LIVE-ORDER.md` has the full script. No AI session sets that flag.
+
+Open `http://127.0.0.1:8080/`. Credentials and private keys stay outside Git and must be configured separately on every computer. Linux uses the same environment names and `go build -o pmbattle .`; portable Windows/Linux artifacts are also published by GitHub Actions.
 
 ## Important operational details
 
@@ -159,20 +183,33 @@ Kalshi's own documentation sites were unreachable from the remote coding environ
 - Production mutation is disabled by default and becomes available only when the server starts with production credentials, simulated mode off, and `PMBATTLE_TRADING_ENABLED=true`.
 - The schedule feed is HTTP. Deploy through the office server and monitor its freshness; do not infer a game state when the feed is unavailable.
 
-## Next milestone: the owner's first live basic order
+## Next milestone: retry the first live basic order
 
-The owner runs `FIRST-LIVE-ORDER.md` in the browser against production with `PMBATTLE_MAX_CASH_RISK=5`. The next AI session's job is to act on what they report:
+**This is the one thing that matters next.** The September 1 attempt was rejected for count precision; the fix is on `main` but unproven. The owner must rebuild before retrying, or they will run the old binary and see the same rejection.
 
-1. Read the owner's results message. If Part 1 (read-only sanity) failed, fix that before anything else.
-2. If Part 2 contract counts differed between PMBattle and Kalshi, inspect `QuantityForCashRisk` sizing and the `count` string sent by `PlaceOrder` against the audit record for that order.
-3. If Part 3 fees differed, adjust `pricing.KalshiFee` rounding to match Kalshi's rule (see "Kalshi API verification status") and add a test reproducing the owner's exact numbers.
-4. Record the outcome, with dates and numbers, in "Known limitations", and delete the lines there that the live test has now settled.
-5. Only after two clean basic orders: design a live test for iceberg (one slice, tiny size), then for follow. Follow needs proof that a post-only order that would cross is rejected, and that the amend response's order ID behavior matches the replacement-ID handling. Both are described in the verification section.
-6. Keep `PMBATTLE_TRADING_ENABLED=false` in every start script that is not actively being used for a test.
+The owner runs `FIRST-LIVE-ORDER.md` in the browser against production with `PMBATTLE_MAX_CASH_RISK=5`. The next session acts on what they report:
 
-Housekeeping still open: retention for completed parents and audit rows.
+1. **If they have not yet rebuilt**, tell them first: `git pull`, then `cd web && npm run build && cd ..`, then `go build -o pmbattle.exe .`. The running executable embeds the browser page and the old code until it is rebuilt.
+2. If Part 1 (read-only sanity) failed, fix that before anything else. Nothing downstream is trustworthy if the account panel is wrong.
+3. If the order is rejected again, get the exact Kalshi error text. It is stored verbatim in the System audit tab under `parent order rejected`, and that record is the primary evidence, not the owner's description.
+4. If Part 2 contract counts differed between PMBattle and Kalshi, compare `QuantityForCashRisk` sizing and the `count` string from `PlaceOrder` against the audit record for that order.
+5. If Part 3 fees differed, adjust `pricing.KalshiFee` rounding to match Kalshi's rule (see "Kalshi API verification status") and add a test reproducing the owner's exact numbers.
+6. Record the outcome, with dates and numbers, in "Known limitations", and delete the lines the live test has settled. Mark the count rule as proven only once an order is **accepted**.
+7. Only after two clean basic orders: design a live test for iceberg (one slice, tiny size), then follow. Follow additionally needs proof that a post-only order that would cross is rejected, and that the amend response's order ID behaviour matches the replacement-ID handling.
+8. Keep `PMBATTLE_TRADING_ENABLED=false` in every start script not actively under test.
 
-After a second exchange is selected, connect its normalized adapter to `internal/routing`, then add the fill-driven coordinator that reduces parent remaining risk before resizing or canceling competing venue children. Until then, the planner remains a tested, non-mutating foundation rather than an order path.
+### Backlog, in the owner's priority order
+
+The owner's stated priorities for this project are **speed and legibility**. Proposed on September 1 and not yet chosen:
+
+1. **Keyboard control.** The largest remaining speed win. `/` to focus search, `Esc` to close the order slip, arrow keys to move down the board, `Enter` to open a book. Everything needs the mouse today.
+2. **Freeze the board header** so columns keep their meaning while scrolling a long list.
+3. **Give the price more visual weight** than the exchange name and size inside each board cell; they currently compete.
+4. **Mark games with no mapped market at the row level** instead of reading "Not listed" cell by cell.
+
+Also open, lower priority: retention for completed parent orders and audit rows (both grow without bound), and the simulated-mode quirk in "Known limitations".
+
+After a second exchange is selected, connect its normalized adapter to `internal/routing`, then add the fill-driven coordinator that reduces parent remaining risk before resizing or cancelling competing venue children. Until then, the planner remains a tested, non-mutating foundation rather than an order path.
 
 ## Validation commands
 
@@ -186,8 +223,10 @@ GitHub Actions runs these checks and publishes portable Windows/Linux binaries o
 
 ## Lightweight checkpoint
 
-- Browser production bundle: about 88.5 KB JavaScript and 23.2 KB CSS before gzip; there are no runtime browser dependencies beyond Svelte. Mapping reviews stay out of the startup snapshot and live stream and load only when requested in Settings.
+- Browser production bundle (September 1, 2026): 92.0 KB JavaScript and 23.7 KB CSS before gzip, 32.2 KB and 5.0 KB gzipped; there are no runtime browser dependencies beyond Svelte. Mapping reviews stay out of the startup snapshot and live stream and load only when requested in Settings.
 - Production source maps are disabled and old side-panel CSS/dead book code were removed.
 - Runtime background work is bounded: one 30-second schedule ticker, one five-minute market-catalog ticker, one 30-second authenticated account-reconciliation ticker, one account stream, and one consolidated order-book stream containing only the selected UI book plus active follow books.
-- The stripped single Windows executable is about 12.0 MB, primarily because it embeds the pure-Go SQLite implementation and the complete browser app; deployment still requires only that one executable.
-- The catalog-refresh certification test covers new listings, health/schedule publication order, unfiltered preference state, and removal of withdrawn markets. Production HTTP tests cover create, individual cancel, scoped cancel, and resume locks plus same-origin streams and security headers. Current statement coverage is 53.4% for application orchestration and 54.0% for the HTTP server; the next target remains 70% through demo failure/reconnect cases.
+- The stripped single Windows executable is 12.3 MB, primarily because it embeds the pure-Go SQLite implementation and the complete browser app; deployment still requires only that one executable.
+- 94 Go tests, all against a fake exchange adapter; no test ever sends a real order mutation. The catalog-refresh certification test covers new listings, health/schedule publication order, unfiltered preference state, and removal of withdrawn markets. Production HTTP tests cover create, individual cancel, scoped cancel, and resume locks plus the request-header guard, same-origin streams, and security headers.
+- Statement coverage on September 1, 2026: app 56.9%, orders 73.4%, kalshi 52.9%, server 56.2%, storage 62.3%, mapping 88.8%. The next target remains 70% for app and server, through demo failure and reconnect cases.
+- Two tests are written to fail against the pre-fix code and should stay that way: `TestConcurrentWritersDoNotHitSQLiteBusy` (storage) and `TestQuantityForCashRiskUsesWholeHundredthsOfAContract` (orders). If either is ever loosened, the bug it guards can return silently.
