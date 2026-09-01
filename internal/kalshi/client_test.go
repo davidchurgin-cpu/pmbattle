@@ -222,7 +222,11 @@ func TestSnapshotPaginatesRestingOrdersAndOpenPositions(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("limit") != "1000" {
+		wantLimit := "1000"
+		if r.URL.Path == "/portfolio/fills" {
+			wantLimit = "250"
+		}
+		if r.URL.Query().Get("limit") != wantLimit {
 			t.Fatalf("missing page limit: %s", r.URL.RawQuery)
 		}
 		switch r.URL.Path {

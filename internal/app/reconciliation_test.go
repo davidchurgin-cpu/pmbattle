@@ -195,6 +195,15 @@ func TestAccountReconciliationImportsHistoricalFills(t *testing.T) {
 	if len(service.Snapshot().Fills) != 1 {
 		t.Fatalf("historical fill was duplicated: %+v", service.Snapshot().Fills)
 	}
+	audit, err := store.LoadAudit(context.Background(), 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range audit {
+		if record.Kind == "fill" {
+			t.Fatalf("historical fill was replayed into the audit: %+v", record)
+		}
+	}
 }
 
 func TestCashAtRiskUsesAccountExposureWithoutDoubleCountingManagedParents(t *testing.T) {

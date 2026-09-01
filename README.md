@@ -98,6 +98,8 @@ Every active row in the Orders tray can be canceled individually. This includes 
 
 The Fills tray imports recent account-wide Kalshi fill history during every account reconciliation, including executions that occurred while PMBattle was stopped. Live and historical fills are deduplicated and the newest 250 remain visible.
 
+Historical fill recovery is a quiet batch merge: PMBattle requests only the newest 250, enriches/deduplicates/sorts them once, and does not replay old fills through notifications or audit writes. Managed parents retain a separate targeted recovery path for strategy correctness.
+
 Positions show average entry American odds as raw exchange odds followed by fee-included odds derived from current exposure, contracts, and reported fees. Working basic and reconciled orders can be edited inline from the Orders tray by remaining quantity and cent limit; live edits require confirmation, use Kalshi V2 amend, and update immediately from the acknowledgement. Iceberg and follow children remain strategy-controlled.
 
 Order submission is single-flight in the browser: the button locks as `Checking Kalshi…`, and an ambiguous create acknowledgement is reconciled against the unique client order ID before PMBattle reports failure. The Orders kill switch's `All active Kalshi orders` scope includes managed and externally-created/recovered resting orders and reports partial failures explicitly.

@@ -289,7 +289,7 @@ func (c *Client) Snapshot(ctx context.Context) ([]domain.Order, []domain.Positio
 	var fillPayload struct {
 		Fills []rawFill `json:"fills"`
 	}
-	if err := c.getJSON(ctx, "/portfolio/fills?limit=1000", &fillPayload); err != nil {
+	if err := c.getJSON(ctx, "/portfolio/fills?limit=250", &fillPayload); err != nil {
 		return nil, nil, nil, err
 	}
 	fills := make([]domain.Fill, 0, len(fillPayload.Fills))

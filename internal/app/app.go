@@ -1256,9 +1256,7 @@ func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
 				s.broadcast(domain.StreamEvent{Type: "position", Data: position})
 			}
 		}
-		for _, fill := range fills {
-			s.applyFill(fill, publish)
-		}
+		s.mergeHistoricalFills(fills)
 	}
 	s.reconcileSettlements(ctx)
 	s.reconcileParentFills(ctx, publish)
@@ -1764,6 +1762,47 @@ func (s *Service) applyFill(fill domain.Fill, publish bool) bool {
 		s.broadcast(domain.StreamEvent{Type: "fill", Data: fill})
 	}
 	return true
+}
+
+// mergeHistoricalFills restores the account tray without replaying old fills
+// through strategy, notification, and audit paths one record at a time.
+// Managed parents have a separate order-scoped recovery pass immediately after
+// account reconciliation, so missed strategy fills are still handled safely.
+func (s *Service) mergeHistoricalFills(fills []domain.Fill) {
+	if len(fills) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]bool, len(s.snapshot.Fills)+len(fills))
+	merged := make([]domain.Fill, 0, len(s.snapshot.Fills)+len(fills))
+	for _, fill := range s.snapshot.Fills {
+		key := fill.ID
+		if key == "" {
+			key = fill.OrderID + "|" + fill.CreatedAt.Format(time.RFC3339Nano) + "|" + strconv.FormatInt(int64(fill.Quantity), 10)
+		}
+		if !seen[key] {
+			seen[key] = true
+			merged = append(merged, fill)
+		}
+	}
+	for _, fill := range fills {
+		key := fill.ID
+		if key == "" {
+			key = fill.OrderID + "|" + fill.CreatedAt.Format(time.RFC3339Nano) + "|" + strconv.FormatInt(int64(fill.Quantity), 10)
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		s.enrichFillLocked(&fill)
+		merged = append(merged, fill)
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].CreatedAt.After(merged[j].CreatedAt) })
+	if len(merged) > 250 {
+		merged = merged[:250]
+	}
+	s.snapshot.Fills = merged
 }
 
 func (s *Service) attachMatched(markets []domain.CanonicalMarket) []string {
