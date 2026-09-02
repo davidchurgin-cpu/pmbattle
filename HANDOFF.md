@@ -225,6 +225,14 @@ Also open, lower priority: retention for completed parent orders and audit rows 
 
 After a second exchange is selected, connect its normalized adapter to `internal/routing`, then add the fill-driven coordinator that reduces parent remaining risk before resizing or cancelling competing venue children. Until then, the planner remains a tested, non-mutating foundation rather than an order path.
 
+### Deferred reference: `exchange-aws`
+
+Do not add another venue yet. The owner's `C:\Users\David\Desktop\exchange-aws` project is reference material for a later multi-exchange milestone, after Kalshi basic-order submission, cancellation, fills, reconciliation, fee totals, and restart recovery have been proven.
+
+When that milestone begins, extract and reimplement only the useful domain knowledge: ProphetX and 4Caster API behavior, rotation/team aliases, doubleheader and period matching, cancellation-during-submission handling, final-fill reconciliation after cancel, parent/child batch history, and cancel-and-reprice workflow. Preserve PMBattle's fixed-point accounting, centralized cash-risk authority, normalized `ExchangeAdapter`, stale-feed protection, audit trail, and lightweight single-server design.
+
+Do not copy the legacy JSP/Tomcat structure, RabbitMQ as an in-process order engine, thread-per-order design, floating-point money calculations, hardcoded credentials or paths, silent league fallbacks, unauthenticated mutation endpoints, or independent venue bots without a shared bankroll. The reference folder contains exposed secrets and apparent key material; credentials must be rotated and the folder must not be published or imported into this repository.
+
 ## Validation commands
 
 ```text
