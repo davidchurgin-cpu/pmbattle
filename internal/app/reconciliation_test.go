@@ -206,6 +206,20 @@ func TestAccountReconciliationImportsHistoricalFills(t *testing.T) {
 	}
 }
 
+func TestManualAccountRefreshReturnsReconciledSnapshot(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "manual-refresh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter := &appFakeAdapter{balance: 321 * domain.Dollar, snapshotPositions: []domain.Position{{Ticker: "TEST", Quantity: domain.Dollar, CashRisk: 40 * domain.Dollar}}}
+	service := New(Config{}, store, adapter)
+	snapshot := service.RefreshAccount(context.Background())
+	if snapshot.Bankroll != 321*domain.Dollar || len(snapshot.Positions) != 1 || snapshot.Health.AccountState != "ready" || snapshot.Health.AccountUpdated.IsZero() {
+		t.Fatalf("manual refresh did not return reconciled state: %+v", snapshot)
+	}
+}
+
 func TestCashAtRiskUsesAccountExposureWithoutDoubleCountingManagedParents(t *testing.T) {
 	service := &Service{snapshot: domain.Snapshot{
 		Positions:    []domain.Position{{CashRisk: 60 * domain.Dollar}},
@@ -423,6 +437,38 @@ func TestAmendReconciledOrderUsesRemainingQuantityAndUpdatesImmediately(t *testi
 	}
 	if order.Quantity != 8*domain.Dollar || order.FilledQuantity != 2*domain.Dollar || order.LimitPrice != 4500 || service.Snapshot().Orders[0].LimitPrice != 4500 {
 		t.Fatalf("amend was not reflected immediately: %+v", order)
+	}
+}
+
+func TestAmendOrderCannotSpendBeyondSharedAvailableCash(t *testing.T) {
+	store, err := storage.Open(filepath.Join(t.TempDir(), "amend-bankroll.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	adapter := &appFakeAdapter{}
+	service := New(Config{TradingEnabled: true, ExchangeEnvironment: "production", MaxCashRisk: 100 * domain.Dollar}, store, adapter)
+	service.snapshot.Bankroll = 5 * domain.Dollar
+	service.snapshot.Orders = []domain.Order{{ID: "live-order-1", Exchange: "Kalshi", Ticker: "TEST", Side: "yes", Status: "resting", Quantity: 8 * domain.Dollar, LimitPrice: 5000, CashRisk: 4 * domain.Dollar}}
+
+	if _, err := service.AmendOrder(context.Background(), "live-order-1", 20*domain.Dollar, 5000); !errors.Is(err, ErrInsufficientAvailableBalance) {
+		t.Fatalf("over-bankroll amend got %v", err)
+	}
+	if len(adapter.amended) != 0 {
+		t.Fatalf("rejected amend reached exchange: %+v", adapter.amended)
+	}
+
+	quantity := 10 * domain.Dollar
+	quote, err := pricing.Quote(5000, quantity, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AmendOrder(context.Background(), "live-order-1", quantity, 5000); err != nil {
+		t.Fatal(err)
+	}
+	wantBalance := 5*domain.Dollar - (quote.AllInCost - 4*domain.Dollar)
+	if got := service.Snapshot().Bankroll; got != wantBalance {
+		t.Fatalf("available balance after amend = %d, want %d", got, wantBalance)
 	}
 }
 

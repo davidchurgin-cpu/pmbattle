@@ -38,6 +38,7 @@ type Config struct {
 type Service struct {
 	mu              sync.RWMutex
 	orderMu         sync.Mutex
+	accountMu       sync.Mutex
 	catalogMu       sync.Mutex
 	cfg             Config
 	store           *storage.Store
@@ -164,6 +165,13 @@ func (s *Service) Snapshot() domain.Snapshot {
 	_ = json.Unmarshal(data, &copy)
 	copy.AvailableToAllocate = s.availableParentCashLocked()
 	return copy
+}
+
+// RefreshAccount performs the same read-only reconciliation used at startup
+// and after reconnects.
+func (s *Service) RefreshAccount(ctx context.Context) domain.Snapshot {
+	s.reconcileAccount(ctx, true)
+	return s.Snapshot()
 }
 
 func (s *Service) broadcastAccountSummary() {
@@ -524,6 +532,7 @@ func (s *Service) AmendOrder(ctx context.Context, id string, remainingQuantity, 
 			break
 		}
 	}
+	availableCash := s.availableParentCashLocked()
 	s.mu.RUnlock()
 	if target.ID == "" {
 		return domain.Order{}, ErrOrderNotFound
@@ -537,6 +546,12 @@ func (s *Service) AmendOrder(ctx context.Context, id string, remainingQuantity, 
 	}
 	if quote.AllInCost > s.orderEngine.MaxCashRisk() {
 		return domain.Order{}, orderengine.ErrCashRiskCap
+	}
+	// Replacing the current order releases its existing reservation, so the
+	// amended order may use available cash plus that reservation, but no more.
+	if quote.AllInCost > availableCash+target.CashRisk {
+		_ = s.store.Audit(ctx, "order_amend_rejected", map[string]any{"order": target, "remaining_quantity": remainingQuantity, "limit_price": limitPrice, "error": ErrInsufficientAvailableBalance.Error()})
+		return domain.Order{}, ErrInsufficientAvailableBalance
 	}
 	request := exchange.AmendOrderRequest{OrderID: id, Ticker: target.Ticker, OutcomeSide: target.Side, Quantity: target.FilledQuantity + remainingQuantity, LimitPrice: limitPrice}
 	_ = s.store.Audit(ctx, "order_amend_requested", map[string]any{"order": target, "remaining_quantity": remainingQuantity, "limit_price": limitPrice})
@@ -566,6 +581,10 @@ func (s *Service) AmendOrder(ctx context.Context, id string, remainingQuantity, 
 		}
 	}
 	s.snapshot.Orders = append([]domain.Order{amended}, filtered...)
+	s.snapshot.Bankroll -= quote.AllInCost - target.CashRisk
+	if s.snapshot.Bankroll < 0 {
+		s.snapshot.Bankroll = 0
+	}
 	if managed {
 		s.upsertParentLocked(parent)
 	}
@@ -1175,6 +1194,8 @@ func buildMappingReviews(events []domain.CanonicalEvent, markets []domain.Canoni
 }
 
 func (s *Service) reconcileAccount(ctx context.Context, publish bool) {
+	s.accountMu.Lock()
+	defer s.accountMu.Unlock()
 	if ctx.Err() != nil {
 		return
 	}

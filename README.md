@@ -44,6 +44,11 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - SQLite WAL persistence for schedules, automatic mappings, manual mapping overrides, review queues, settings, settlements, parent orders, and audit records
 - On-demand System audit history for order requests, acknowledgements, rejections, fills, risk reconciliation, follow decisions, resumes, and cancellations; cursor paging keeps it out of the live snapshot
 - Standard light and dark themes
+- Fast keyboard navigation: `/` focuses search, arrow keys move through games, Enter opens the selected book, and Escape closes the order slip
+- Bounded browser rendering for large schedules and fill histories, with explicit `Show more` controls instead of loading every row at once
+- Automatic browser snapshot and live-stream reconnects with visible UI connection state; selected books stay non-actionable until a fresh synchronized update arrives
+- Manual read-only account refresh in Settings for immediate order, position, fill, settlement, and bankroll reconciliation
+- Order-slip maker/taker fee comparisons and conservative fee-included cash sizing before submission
 - Persisted Settings tab for enabling only the sports you want to load and subscribe to
 - Optional filter for six-digit extra/added games with lower market limits
 - A request-header check that blocks cross-site request forgery on every state-changing call
@@ -150,6 +155,7 @@ The same Kalshi API key can authenticate from another PC if Kalshi account polic
 - The server enforces same-origin browser WebSockets, a restrictive content security policy, MIME sniffing protection, referrer suppression, and frame denial.
 - Order submission remains off unless `PMBATTLE_TRADING_ENABLED=true` is deliberately supplied with authenticated demo or production credentials. The engine rejects stale books, unknown mappings, invalid sides, requests above the per-order cash-risk cap (default $20,000, lowered with `PMBATTLE_MAX_CASH_RISK`), unsupported strategies, and prices beyond the fee-adjusted cap.
 - Parent creation is serialized under one server lock. The full parent target must fit available Kalshi cash after subtracting unexposed commitments already reserved for managed iceberg/follow parents; a rejected target never reaches the adapter.
+- Basic/reconciled order amendments use the same shared-bankroll guard. Replacement capacity releases the order's current reservation, preserves hidden strategy commitments, and rejects an oversized edit before any exchange request.
 - The routing planner uses fixed-point cash risk, fee-included American moneylines, per-venue available cash, hidden commitments, liquidity capacity, freshness, and the hard parent price cap. It is execution-independent and cannot send an order.
 
 See [HANDOFF.md](HANDOFF.md) for architecture, operational details, known limitations, and the next implementation milestone.

@@ -31,6 +31,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("GET /api/snapshot", s.snapshot)
+	mux.HandleFunc("POST /api/account/refresh", s.refreshAccount)
 	mux.HandleFunc("GET /api/settings", s.settings)
 	mux.HandleFunc("GET /api/audit", s.audit)
 	mux.HandleFunc("GET /api/mapping-reviews", s.mappingReviews)
@@ -115,6 +116,9 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) snapshot(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.service.Snapshot())
+}
+func (s *Server) refreshAccount(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.service.RefreshAccount(r.Context()))
 }
 func (s *Server) settings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.service.Snapshot().Settings)

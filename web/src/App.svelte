@@ -7,6 +7,7 @@
   let draftSports: string[] = []
   let draftExcludeAddedGames = false
   let settingsStatus = ''
+  let refreshingAccount = false
   let mappingReviews: MappingReview[] = []
   let mappingLoaded = false
   let mappingLoading = false
@@ -15,9 +16,12 @@
   let mappingSelections: Record<string, string> = {}
   let mappingDeciding = ''
   let query = ''
+  let searchInput: HTMLInputElement
+  let keyboardIndex = -1
   let selectedSport = 'ALL'
   let selectedLeague = 'ALL'
   let selectedDate = 'ALL'
+  let gameDisplayLimit = 80
   let selectedQuote: PriceQuote | null = null
   let selectedEvent: Event | null = null
   let selectedMarket: MarketView | null = null
@@ -28,6 +32,7 @@
   let slipPrice = 0
   let slipRisk = '100'
   let slipCap = ''
+  let slipCapAuto = true
   let slipStrategy: 'basic' | 'iceberg' | 'follow' = 'basic'
   let slipPolicy: 'limit' | 'post_only' | 'ioc' = 'limit'
   let slipSlice = '25'
@@ -44,6 +49,7 @@
   let cancelingGroup = false
   let cancelGroupStatus = ''
   let unreadFills = 0
+  let fillDisplayLimit = 40
   let fillNotices: { key: string; fill: Fill }[] = []
   const seenFillIDs = new Set<string>()
   let book: OrderBook | null = null
@@ -57,6 +63,13 @@
   let auditError = ''
   let theme: 'light' | 'dark' = (localStorage.getItem('pmbattle-theme') as 'light' | 'dark') || 'dark'
   let error = ''
+  let browserStreamState: 'connecting' | 'live' | 'reconnecting' = 'connecting'
+  let streamSocket: WebSocket | null = null
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  let reconnectDelay = 1000
+  let snapshotRetryTimer: ReturnType<typeof setTimeout> | null = null
+  let snapshotRetryDelay = 1000
+  let streamStopped = false
 
   const rawFetch = globalThis.fetch.bind(globalThis)
   // Every API call carries a custom header so a cross-site page cannot forge requests.
@@ -70,6 +83,7 @@
   const qty = (value: number) => (value / 10000).toLocaleString(undefined, { maximumFractionDigits: 2 })
   const ml = (value?: number) => value === undefined ? '—' : value > 0 ? `+${value}` : `${value}`
   const rawML = (price: number) => Math.round(price < 5000 ? 100 * (10000 - price) / price : -100 * price / (10000 - price))
+  const moneylineProbability = (value: number) => value >= 100 ? 10000 * 100 / (value + 100) : value <= -100 ? 10000 * -value / (-value + 100) : Number.NaN
   function positionOdds(position: Position) {
     const quantity = Math.abs(position.quantity)
     const raw = position.averagePrice || (quantity ? Math.round(position.cashRisk * 10000 / quantity) : 0)
@@ -88,15 +102,32 @@
     return value > 0 ? `+${value}` : `${value}`
   }
   const ceilDiv = (value: bigint, divisor: bigint) => (value + divisor - 1n) / divisor
-  const takerQuote = (level: BookLevel) => {
+  const feeQuote = (level: BookLevel, rate: bigint) => {
     const d = 10000n, price = BigInt(level.price), quantity = BigInt(level.quantity)
-    const fee = ceilDiv(700n * quantity * price * (d - price), d * d * d)
+    const fee = ceilDiv(rate * quantity * price * (d - price), d * d * d)
     const cost = ceilDiv(price * quantity, d) + fee
     const effective = Number(ceilDiv(cost * d, quantity))
     const moneyline = effective === 5000 ? 100 : effective < 5000 ? Math.round(100 * (10000 - effective) / effective) : -Math.round(100 * effective / (10000 - effective))
     return { fee: Number(fee), cost: Number(cost), moneyline }
   }
+  const takerQuote = (level: BookLevel) => feeQuote(level, 700n)
+  const makerQuote = (level: BookLevel) => feeQuote(level, 175n)
+  function quantityForCashRisk(price: number, cashRisk: number) {
+    if (price <= 0 || price >= 10000 || cashRisk <= 0) return 0
+    let low = 0
+    let high = Math.floor(cashRisk * 10000 / price) + 1
+    while (low < high) {
+      const mid = low + Math.floor((high - low + 1) / 2)
+      if (takerQuote({ price, quantity: mid }).cost <= cashRisk) low = mid
+      else high = mid - 1
+    }
+    return Math.floor(low / 100) * 100
+  }
   const levelPrice = (level: BookLevel) => `${ml(rawML(level.price))} → ${ml(takerQuote(level).moneyline)}`
+  function orderOdds(order: Order) {
+    const remaining = Math.max(100, order.quantity - order.filledQuantity)
+    return `${ml(rawML(order.limitPrice))} → ${ml(takerQuote({ price: order.limitPrice, quantity: remaining }).moneyline)}`
+  }
   const marketLabel = (market: MarketView | null) => market?.type === 'spread' ? 'Spread' : market?.type === 'total' ? 'Total' : 'Moneyline'
   type SelectionRole = 'away' | 'home' | 'over' | 'under'
   function quoteRole(event: Event | null, market: MarketView | null, quote: PriceQuote | null): SelectionRole {
@@ -116,12 +147,28 @@
   $: activeRole = activeQuote ? quoteRole(selectedEvent, selectedMarket, activeQuote) : selectedQuote && bookSide !== (selectedQuote.side || 'yes') ? oppositeRole(baseRole) : baseRole
   $: activeOutcome = activeQuote?.outcome || (selectedQuote && bookSide !== (selectedQuote.side || 'yes') ? `Not ${selectedQuote.outcome}` : selectedQuote?.outcome || '')
   $: activeMoneyline = displayAsks[0] ? takerQuote(displayAsks[0]).moneyline : activeQuote?.allInMoneyline || selectedQuote?.allInMoneyline
-  $: slipQuantity = slipPrice > 0 ? Math.max(10000, Math.floor((Number(slipRisk) || 0) * 100000000 / slipPrice)) : 10000
-  $: slipQuote = slipPrice > 0 ? takerQuote({ price: slipPrice, quantity: slipQuantity }) : null
   $: slipRiskMoney = Math.round((Number(slipRisk) || 0) * 10000)
+  $: slipQuantity = quantityForCashRisk(slipPrice, slipRiskMoney)
+  $: slipSliceQuantity = Math.round((Number(slipSlice) || 0) * 10000)
+  $: slipQuote = slipPrice > 0 && slipQuantity > 0 ? takerQuote({ price: slipPrice, quantity: slipQuantity }) : null
+  $: slipMakerQuote = slipPrice > 0 && slipQuantity > 0 ? makerQuote({ price: slipPrice, quantity: slipQuantity }) : null
+  $: if (slipCapAuto && slipQuote) slipCap = `${slipQuote.moneyline}`
+  $: slipCapInvalid = !Number.isFinite(moneylineProbability(Number(slipCap)))
+  $: slipBeyondCap = Boolean(slipQuote && !slipCapInvalid && moneylineProbability(slipQuote.moneyline) > moneylineProbability(Number(slipCap)))
+  $: slipInvalidSlice = slipStrategy === 'iceberg' && (slipSliceQuantity <= 0 || slipSliceQuantity >= slipQuantity)
   $: slipOverCap = Boolean(snapshot.health.maxCashRisk) && slipRiskMoney > (snapshot.health.maxCashRisk || 0)
+  $: bookActionable = Boolean(book && !book.stale && browserStreamState === 'live')
+  $: editQuantityValue = Math.round((Number(editQuantity) || 0) * 10000)
+  $: editLimitValue = Math.round((Number(editLimit) || 0) * 100)
+  $: editRiskQuote = editQuantityValue > 0 && editLimitValue > 0 && editLimitValue < 10000 ? takerQuote({ price: editLimitValue, quantity: editQuantityValue }) : null
+  $: editOverCap = Boolean(editRiskQuote && snapshot.health.maxCashRisk && editRiskQuote.cost > (snapshot.health.maxCashRisk || 0))
+  $: editingOrder = snapshot.orders.find(order => order.id === editingOrderID)
+  $: editOverAvailable = Boolean(editRiskQuote && editingOrder && editRiskQuote.cost > snapshot.availableToAllocate + editingOrder.cashRisk)
   $: workingOrders = snapshot.orders.filter(order => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((order.status || '').toLowerCase()))
   $: activeParents = snapshot.parentOrders.filter(parent => !['canceled', 'cancelled', 'executed', 'filled', 'closed', 'rejected'].includes((parent.status || '').toLowerCase()))
+  $: scopedCancelParents = activeParents.filter(parent => cancelGroupScope === 'event' ? parent.eventId === selectedEvent?.id : cancelGroupScope.startsWith('strategy:') ? parent.strategy.toLowerCase() === cancelGroupScope.slice(9).toLowerCase() : cancelGroupScope.startsWith('exchange:') ? parent.exchange.toLowerCase() === cancelGroupScope.slice(9).toLowerCase() : false)
+  $: cancelScopeCount = cancelGroupScope === 'all' ? workingOrders.length : scopedCancelParents.length
+  $: visibleFills = snapshot.fills.slice(0, fillDisplayLimit)
   $: filteredMappingReviews = mappingReviews.filter(review => `${review.title} ${review.exchange} ${review.tickers.join(' ')} ${review.candidates.flatMap(candidate => candidate.participants.map(participant => `${participant.rotation} ${participant.name} ${participant.abbreviation}`)).join(' ')}`.toLowerCase().includes(mappingQuery.toLowerCase()))
 
   function normalizeSnapshot(value: Snapshot): Snapshot {
@@ -151,11 +198,14 @@
 		const selection = tickerSelection(event, row.ticker)
 		if (!selection) return
 		view = 'schedule'; query = ''; selectedSport = 'ALL'; selectedLeague = 'ALL'; selectedDate = 'ALL'; trayOpen = false
+		const boardIndex = snapshot.events.filter(candidate => dateKey(candidate.startTime) >= dateKey(new Date()) || candidate.id === event.id).findIndex(candidate => candidate.id === event.id)
+		gameDisplayLimit = Math.max(80, boardIndex + 1)
 		await select(event, selection.quote, selection.market)
 		await tick()
 		document.querySelector(`[data-event-id="${CSS.escape(event.id)}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
 	}
 	function openAccountMarketKey(event: KeyboardEvent, row: MarketLinkedRow) {
+		if (event.target !== event.currentTarget) return
 		if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openAccountMarket(row) }
 	}
   function fillName(fill: Fill) { return [fill.team, fill.market].filter(Boolean).join(' · ') || fill.ticker }
@@ -200,6 +250,7 @@
     setTimeout(() => dismissNotice(key), 12000)
   }
   function viewFill(key: string) { dismissNotice(key); trayTab = 'fills'; trayOpen = true; slipOpen = false; unreadFills = 0 }
+  function openFills() { trayTab = 'fills'; trayOpen = true; unreadFills = 0; fillDisplayLimit = 40 }
   async function showHistory(mode: 'settlements' | 'audit') {
     trayTab = 'history'; trayOpen = true; historyMode = mode
     if (mode === 'audit' && auditRecords.length === 0) await loadAudit(true)
@@ -282,6 +333,50 @@
     const market = event.markets?.find(value => value.home || value.away || value.over || value.under)
     select(event, market?.home || market?.away || market?.over || market?.under, market)
   }
+  function toggleGameKey(key: KeyboardEvent, event: Event) {
+    if (key.target !== key.currentTarget) return
+    if (key.key === 'Enter' || key.key === ' ') { key.preventDefault(); toggleGame(event) }
+  }
+  const isTypingTarget = (target: globalThis.EventTarget | null) => {
+    const element = target instanceof HTMLElement ? target : null
+    return Boolean(element && (element.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(element.tagName)))
+  }
+  async function focusGame(index: number) {
+    if (!filtered.length) return
+    if (index >= visibleEvents.length && visibleEvents.length < filtered.length) {
+      gameDisplayLimit = Math.min(filtered.length, Math.max(gameDisplayLimit + 80, index + 1))
+      await tick()
+    }
+    if (!visibleEvents.length) return
+    keyboardIndex = Math.max(0, Math.min(index, visibleEvents.length - 1))
+    await tick()
+    const rows = document.querySelectorAll<HTMLElement>('.game-wrap > .game')
+    rows[keyboardIndex]?.focus()
+    rows[keyboardIndex]?.scrollIntoView({ block: 'nearest' })
+  }
+  async function handleShortcut(event: KeyboardEvent) {
+    if (event.key === '/' && !isTypingTarget(event.target)) {
+      event.preventDefault(); view = 'schedule'; await tick(); searchInput?.focus(); searchInput?.select(); return
+    }
+    if (event.key === 'Escape') {
+      if (editingOrderID) stopEditOrder()
+      else if (slipOpen) slipOpen = false
+      else if (trayOpen) trayOpen = false
+      else if (selectedEvent && expandedEventID) toggleGame(selectedEvent)
+      return
+    }
+    if (view !== 'schedule' || isTypingTarget(event.target)) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const activeRow = document.activeElement?.closest('.game-wrap') as HTMLElement | null
+      const activeIndex = activeRow ? visibleEvents.findIndex(candidate => candidate.id === activeRow.dataset.eventId) : keyboardIndex
+      await focusGame(event.key === 'ArrowDown' ? activeIndex + 1 : Math.max(0, activeIndex - 1))
+      return
+    }
+    if (event.key === 'Enter' && keyboardIndex >= 0 && !document.activeElement?.classList.contains('game')) {
+      event.preventDefault(); toggleGame(visibleEvents[keyboardIndex])
+    }
+  }
   function selectOption(option: MarketOption) {
     if (!selectedEvent || !selectedMarket || !selectedQuote) return
     let quote: PriceQuote | undefined
@@ -291,10 +386,12 @@
     select(selectedEvent, quote, market)
   }
   function chooseBookPrice(level: BookLevel, intent: 'cross' | 'join') {
+    if (!bookActionable) return
     slipPrice = level.price
     slipIntent = intent
     slipPolicy = intent === 'cross' ? 'limit' : 'post_only'
-    slipCap = `${takerQuote(level).moneyline}`
+    slipCapAuto = true
+    slipCap = ''
     slipStatus = ''
     trayOpen = false
     slipOpen = true
@@ -346,6 +443,22 @@
       cancelingParentID = ''
     }
   }
+  async function refreshAccount() {
+    if (refreshingAccount) return
+    refreshingAccount = true
+    settingsStatus = 'Refreshing account…'
+    try {
+      const response = await api('/api/account/refresh', { method: 'POST' })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || 'Unable to refresh account')
+      snapshot = normalizeSnapshot(payload as Snapshot)
+      settingsStatus = `Account synchronized at ${updated(snapshot.health.accountUpdated)}`
+    } catch (cause) {
+      settingsStatus = cause instanceof Error ? cause.message : 'Unable to refresh account'
+    } finally {
+      refreshingAccount = false
+    }
+  }
   async function cancelOrder(order: Order) {
     if (!snapshot.health.tradingEnabled || cancelingOrderID) return
     if (snapshot.health.mode === 'live' && !confirm(`Cancel this REAL Kalshi order for ${rowGame(order)}?`)) return
@@ -369,12 +482,19 @@
     cancelGroupStatus = ''
   }
   function stopEditOrder() { editingOrderID = ''; savingOrderID = '' }
+  function editOrderKey(event: KeyboardEvent, order: Order) {
+    event.stopPropagation()
+    if (event.key === 'Enter') { event.preventDefault(); void saveOrder(order) }
+    if (event.key === 'Escape') { event.preventDefault(); stopEditOrder() }
+  }
   async function saveOrder(order: Order) {
     if (!snapshot.health.tradingEnabled || savingOrderID) return
     const remainingQuantity = Math.round(Number(editQuantity) * 10000)
     const limitPrice = Math.round(Number(editLimit) * 100)
     if (remainingQuantity <= 0 || limitPrice <= 0 || limitPrice >= 10000) { cancelGroupStatus = 'Enter a remaining quantity above 0 and a limit from 0.01 to 99.99 cents.'; return }
-    if (snapshot.health.mode === 'live' && !confirm(`Change this REAL Kalshi order to ${editQuantity} remaining contracts at ${editLimit}¢?`)) return
+    if (editOverCap) { cancelGroupStatus = `Estimated all-in risk exceeds the per-order cap of ${money(snapshot.health.maxCashRisk || 0)}.`; return }
+    if (editOverAvailable) { cancelGroupStatus = 'This change exceeds available bankroll after releasing the current order reservation.'; return }
+    if (snapshot.health.mode === 'live' && !confirm(`Change this REAL Kalshi order to ${editQuantity} remaining contracts at ${editLimit}¢ (${money(editRiskQuote?.cost || 0)} estimated all-in risk)?`)) return
     savingOrderID = order.id
     try {
       const response = await api(`/api/orders/${encodeURIComponent(order.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ remainingQuantity, limitPrice }) })
@@ -395,6 +515,7 @@
     if (cancelGroupScope.includes(':')) [scope, value] = cancelGroupScope.split(':', 2)
     if (scope === 'event') value = selectedEvent?.id || ''
     if (scope === 'event' && !value) { cancelGroupStatus = 'Open a game before canceling its orders.'; return }
+    if (scope !== 'all' && snapshot.health.mode === 'live' && !confirm(`Cancel ${cancelScopeCount} REAL managed order${cancelScopeCount === 1 ? '' : 's'} in this scope?`)) return
     cancelingGroup = true
     cancelGroupStatus = 'Canceling…'
     try {
@@ -444,14 +565,68 @@
     if (message.type === 'position') { const next = message.data as Position; snapshot = { ...snapshot, positions: [next, ...snapshot.positions.filter(position => position.ticker !== next.ticker)] } }
   }
   function connect() {
+    if (streamStopped || streamSocket?.readyState === WebSocket.OPEN || streamSocket?.readyState === WebSocket.CONNECTING) return
+    browserStreamState = reconnectDelay > 1000 ? 'reconnecting' : 'connecting'
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     const socket = new WebSocket(`${protocol}//${location.host}/api/ws`)
-    socket.onmessage = event => applyStream(JSON.parse(event.data))
-    socket.onclose = () => setTimeout(connect, 1500)
+    streamSocket = socket
+    socket.onopen = () => { browserStreamState = 'live'; reconnectDelay = 1000 }
+    socket.onmessage = event => {
+      try { applyStream(JSON.parse(event.data)) }
+      catch { /* ignore one malformed browser event and keep the stream alive */ }
+    }
+    socket.onerror = () => socket.close()
+    socket.onclose = () => {
+      if (streamSocket === socket) streamSocket = null
+      if (streamStopped) return
+      browserStreamState = 'reconnecting'
+      if (book) book = { ...book, stale: true }
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      reconnectTimer = setTimeout(connect, reconnectDelay)
+      reconnectDelay = Math.min(reconnectDelay * 2, 10000)
+    }
   }
-  onMount(async () => {
+  async function loadInitialSnapshot() {
+    try {
+      const response = await api('/api/snapshot')
+      if (!response.ok) throw new Error(`Server returned ${response.status}`)
+      if (streamStopped) return
+      snapshot = normalizeSnapshot(await response.json())
+      snapshot.fills.forEach(fill => seenFillIDs.add(fill.id))
+      draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name)
+      draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames
+      error = ''
+      snapshotRetryDelay = 1000
+      connect()
+    } catch (cause) {
+      if (streamStopped) return
+      error = `${cause instanceof Error ? cause.message : 'Unable to load PMBattle'}. Retrying…`
+      browserStreamState = 'reconnecting'
+      if (snapshotRetryTimer) clearTimeout(snapshotRetryTimer)
+      snapshotRetryTimer = setTimeout(loadInitialSnapshot, snapshotRetryDelay)
+      snapshotRetryDelay = Math.min(snapshotRetryDelay * 2, 10000)
+    }
+  }
+  onMount(() => {
     document.documentElement.dataset.theme = theme
-    try { const response = await api('/api/snapshot'); if (!response.ok) throw new Error(`Server returned ${response.status}`); snapshot = normalizeSnapshot(await response.json()); snapshot.fills.forEach(fill => seenFillIDs.add(fill.id)); draftSports = snapshot.settings.availableSports.filter(option => option.enabled).map(option => option.name); draftExcludeAddedGames = snapshot.settings.preferences.excludeAddedGames; connect() } catch (cause) { error = cause instanceof Error ? cause.message : 'Unable to load PMBattle' }
+    streamStopped = false
+    void loadInitialSnapshot()
+    return () => {
+      streamStopped = true
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (snapshotRetryTimer) clearTimeout(snapshotRetryTimer)
+      reconnectTimer = null
+      snapshotRetryTimer = null
+      streamSocket?.close()
+      streamSocket = null
+    }
+  })
+  $: visibleEvents = filtered.slice(0, gameDisplayLimit)
+
+  function resetGameBatch() { gameDisplayLimit = 80; keyboardIndex = -1 }
+  onMount(() => {
+    window.addEventListener('keydown', handleShortcut)
+    return () => window.removeEventListener('keydown', handleShortcut)
   })
   $: document.documentElement.dataset.theme = theme
 </script>
@@ -462,31 +637,32 @@
   <header class="topbar">
     <strong class="brand">PMBATTLE</strong>
     <nav class="primary-nav" aria-label="Application"><button class:active={view === 'schedule'} on:click={() => view = 'schedule'}>Schedule</button><button class:active={view === 'settings'} on:click={() => view = 'settings'}>Settings</button></nav>
-    {#if view === 'schedule'}<label class="search"><span aria-hidden="true">⌕</span><input bind:value={query} aria-label="Search games" placeholder="Search game # or team" /></label>{/if}
-    <div class="health" class:is-stale={snapshot.health.status !== 'ok'}><i></i><span>{snapshot.health.mode.toUpperCase()} · {snapshot.health.exchangeState.toUpperCase()}</span></div>
+    {#if view === 'schedule'}<label class="search"><span aria-hidden="true">⌕</span><input bind:this={searchInput} bind:value={query} on:input={resetGameBatch} aria-label="Search games" placeholder="Search game # or team" /></label>{/if}
+    <div class="health" class:is-stale={snapshot.health.status !== 'ok' || browserStreamState !== 'live'} title={`Browser stream: ${browserStreamState}`}><i></i><span>{snapshot.health.mode.toUpperCase()} · {snapshot.health.exchangeState.toUpperCase()} · UI {browserStreamState.toUpperCase()}</span></div>
     <div class="theme"><button class:active={theme === 'light'} on:click={() => setTheme('light')}>Light</button><button class:active={theme === 'dark'} on:click={() => setTheme('dark')}>Dark</button></div>
   </header>
   {#if view === 'schedule'}
   <nav class="sports" aria-label="Sport filters">
-    {#each sports as sport}<button class:active={selectedSport === sport} on:click={() => { selectedSport = sport; selectedLeague = 'ALL' }}>{sport}</button>{/each}
+    {#each sports as sport}<button class:active={selectedSport === sport} on:click={() => { selectedSport = sport; selectedLeague = 'ALL'; resetGameBatch() }}>{sport}</button>{/each}
     <span class="account">Available <b>{money(snapshot.bankroll)}</b> · New orders <b>{money(snapshot.availableToAllocate)}</b> · At risk <b>{money(snapshot.atRisk)}</b></span>
   </nav>
   <div class="filters">
-    <select bind:value={selectedDate} aria-label="Date"><option value="ALL">All dates</option>{#each dates.slice(1) as date}<option value={date}>{new Date(`${date}T12:00:00`).toLocaleDateString()}</option>{/each}</select>
-    <select bind:value={selectedLeague} aria-label="League"><option value="ALL">All leagues</option>{#each leagues.slice(1) as league}<option>{league}</option>{/each}</select>
-    <span>{filtered.length} games</span>
+    <select bind:value={selectedDate} on:change={resetGameBatch} aria-label="Date"><option value="ALL">All dates</option>{#each dates.slice(1) as date}<option value={date}>{new Date(`${date}T12:00:00`).toLocaleDateString()}</option>{/each}</select>
+    <select bind:value={selectedLeague} on:change={resetGameBatch} aria-label="League"><option value="ALL">All leagues</option>{#each leagues.slice(1) as league}<option>{league}</option>{/each}</select>
+    <span>{visibleEvents.length === filtered.length ? `${filtered.length} games` : `${visibleEvents.length} of ${filtered.length} games`}</span>
+    <small class="shortcut-help">/ search · ↑↓ games · Enter open · Esc close</small>
   </div>
 
   {#if error}<div class="error" role="alert">{error}</div>{/if}
   <div class="workspace">
     <main class="board">
       <div class="board-head"><span>Game</span><span>Team</span><span>Moneyline</span><span>Spread</span><span>Total</span><span>Time</span></div>
-      {#each filtered as event (event.id)}
+      {#each visibleEvents as event (event.id)}
         {@const moneyline = event.markets?.find(market => market.type === 'moneyline')}
         {@const spreadMarket = event.markets?.find(market => market.type === 'spread')}
         {@const total = event.markets?.find(market => market.type === 'total')}
 		<div class="game-wrap" class:expanded={expandedEventID === event.id} data-event-id={event.id}>
-        <section class="game" class:selected={selectedEvent?.id === event.id} role="button" tabindex="0" on:click={() => toggleGame(event)} on:keydown={(key) => { if (key.key === 'Enter' || key.key === ' ') toggleGame(event) }}>
+        <section class="game" class:selected={selectedEvent?.id === event.id} role="button" tabindex="0" on:click={() => toggleGame(event)} on:keydown={(key) => toggleGameKey(key, event)}>
           <div class="rotations">{#each event.participants as participant}<b>{participant.rotation}</b>{/each}</div>
           <div class="teams">{#each event.participants as participant}<div><strong>{participant.name}</strong></div>{/each}</div>
           <div class="market">{#if moneyline}{#each [moneyline.away, moneyline.home] as quote, index}<button class={index === 0 ? 'side-away' : 'side-home'} class:selected={selectedQuote?.ticker === quote?.ticker} disabled={!quote} on:click|stopPropagation={() => select(event, quote, moneyline)}><i class="side-tag">{index === 0 ? 'AWAY' : 'HOME'}</i><b>{ml(quote?.allInMoneyline)}</b><small>{quote ? `${quote.exchange} · ${money(quote.availableQuantity)}` : 'Listed · no offer'}</small></button>{/each}{:else}<span class="market-unlisted" title="Kalshi has not listed a matching moneyline market">Not listed</span>{/if}</div>
@@ -511,23 +687,24 @@
             {#if book && (displayAsks.length || displayBids.length)}
               <div class="ladder asks">
                 {#each [...displayAsks].reverse() as level}
-                  <button class="ladder-row" title="Use this ask in the order slip" on:click={() => chooseBookPrice(level, 'cross')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayAsks.map(value => Number(value.quantity))) * 100)}%`}><b>ASK</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></button>
+                  <button class="ladder-row" disabled={!bookActionable} title={bookActionable ? 'Use this ask in the order slip' : 'Waiting for a synchronized live book'} on:click={() => chooseBookPrice(level, 'cross')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayAsks.map(value => Number(value.quantity))) * 100)}%`}><b>ASK</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></button>
                 {/each}
               </div>
               <div class="book-center" class:role-away={activeRole === 'away'} class:role-home={activeRole === 'home'} class:role-over={activeRole === 'over'} class:role-under={activeRole === 'under'}><b>{activeRole.toUpperCase()} · Trade {bookSide === 'yes' ? 'Yes' : 'No'}</b><span>{activeOutcome}</span></div>
               <div class="ladder bids">
                 {#each displayBids as level}
-                  <button class="ladder-row" title="Join this bid in the order slip" on:click={() => chooseBookPrice(level, 'join')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayBids.map(value => Number(value.quantity))) * 100)}%`}><b>BID</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></button>
+                  <button class="ladder-row" disabled={!bookActionable} title={bookActionable ? 'Join this bid in the order slip' : 'Waiting for a synchronized live book'} on:click={() => chooseBookPrice(level, 'join')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayBids.map(value => Number(value.quantity))) * 100)}%`}><b>BID</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></button>
                 {/each}
               </div>
             {:else}
               <div class="book-wait"><b>Opening live order book…</b><span>Only this selected market is being loaded.</span></div>
             {/if}
-            <footer class="book-footer"><span>Kalshi · {selectedQuote.ticker}</span><span>Maker estimate {money(selectedQuote.makerFee)} · Taker estimate {money(selectedQuote.takerFee)}</span></footer>
+            <footer class="book-footer"><span>Kalshi · {selectedQuote.ticker}{#if book?.updatedAt} · updated {ago(book.updatedAt)} · seq {book.sequence}{/if}</span><span>Maker estimate {money(selectedQuote.makerFee)} · Taker estimate {money(selectedQuote.takerFee)}</span></footer>
           </section>
         {/if}
         </div>
       {:else}<div class="empty">No matching games</div>{/each}
+      {#if visibleEvents.length < filtered.length}<div class="board-more"><button on:click={() => gameDisplayLimit += 80}>Show 80 more games</button><span>{filtered.length - visibleEvents.length} remaining</span></div>{/if}
     </main>
   </div>
 
@@ -535,7 +712,7 @@
     <div class="tray-tabs" aria-label="Account activity">
       <button class:active={trayTab === 'positions'} on:click={() => { trayTab = 'positions'; trayOpen = true }}>Positions ({snapshot.positions.length})</button>
       <button class:active={trayTab === 'orders'} on:click={() => { trayTab = 'orders'; trayOpen = true }}>Orders ({snapshot.orders.length})</button>
-      <button class:active={trayTab === 'fills'} on:click={() => { trayTab = 'fills'; trayOpen = true; unreadFills = 0 }}>Fills ({unreadFills ? `${unreadFills} new` : snapshot.fills.length})</button>
+      <button class:active={trayTab === 'fills'} on:click={openFills}>Fills ({unreadFills ? `${unreadFills} new` : snapshot.fills.length})</button>
       <button class:active={trayTab === 'history'} on:click={() => showHistory('settlements')}>History ({snapshot.settlements.length})</button>
       <span class="tray-status"><b>{workingOrders.length} working</b><small>{snapshot.fills[0] ? `Last fill ${time(snapshot.fills[0].createdAt)}` : 'Monitoring fills'}</small></span>
       <button class="tray-toggle" on:click={() => trayOpen = !trayOpen}>{trayOpen ? 'Collapse ↓' : 'Open ↑'}</button>
@@ -543,11 +720,12 @@
     {#if trayOpen}<div class="tray-body">
       {#if trayTab === 'fills'}
         <div class="table-head"><span>Game / bet</span><span>Exchange</span><span class="num">Quantity</span><span class="num">Raw</span><span class="num">All-in</span><span class="num">Fee</span><span class="num">Cash risk</span></div>
-        {#each snapshot.fills as fill}<div class="table-row" title={fill.ticker}><span><b>{rowGame(fill)}</b><small>{fillName(fill)} · {ago(fill.createdAt)}</small></span><span>{fill.exchange}</span><span class="num">{qty(fill.quantity)}</span><span class="num">{money(fill.rawPrice)}</span><span class="num">{ml(fill.allInMoneyline)}</span><span class="num">{money(fill.fee)}</span><span class="num">{money(fill.cashRisk)}</span></div>{:else}<div class="empty">No fills yet</div>{/each}
+        {#each visibleFills as fill (fill.id)}<div class="table-row linked-row" role="button" tabindex="0" title={`Open ${rowGame(fill)} · ${fillName(fill)}`} aria-label={`Open market for ${rowGame(fill)} ${fillName(fill)}`} on:click={() => openAccountMarket(fill)} on:keydown={(event) => openAccountMarketKey(event, fill)}><span><b>{rowGame(fill)}</b><small>{fillName(fill)} · {ago(fill.createdAt)}</small></span><span>{fill.exchange}</span><span class="num">{qty(fill.quantity)}</span><span class="num">{money(fill.rawPrice)}</span><span class="num">{ml(fill.allInMoneyline)}</span><span class="num">{money(fill.fee)}</span><span class="num">{money(fill.cashRisk)}</span></div>{:else}<div class="empty">No fills yet</div>{/each}
+        {#if visibleFills.length < snapshot.fills.length}<div class="audit-more"><button on:click={() => fillDisplayLimit += 40}>Show 40 earlier fills</button><span>Showing {visibleFills.length} of {snapshot.fills.length}</span></div>{/if}
       {:else if trayTab === 'orders'}
-        {#if snapshot.health.tradingEnabled}<div class="cancel-scope-bar"><b>{snapshot.health.mode === 'live' ? 'Real-order kill switch' : 'Demo kill switch'}</b><select bind:value={cancelGroupScope} aria-label="Cancel scope"><option value="all">All active Kalshi orders</option><option value="event" disabled={!selectedEvent}>Current game</option><option value="strategy:basic">Basic orders</option><option value="strategy:iceberg">Iceberg orders</option><option value="strategy:follow">Follow orders</option><option value="exchange:Kalshi">Kalshi managed orders</option></select><button disabled={cancelingGroup || (cancelGroupScope === 'all' ? workingOrders.length === 0 : activeParents.length === 0)} on:click={cancelGroup}>{cancelingGroup ? 'Canceling…' : 'Cancel scope'}</button><small aria-live="polite">{cancelGroupStatus}</small></div>{/if}
+        {#if snapshot.health.tradingEnabled}<div class="cancel-scope-bar"><b>{snapshot.health.mode === 'live' ? 'Real-order kill switch' : 'Demo kill switch'}</b><select bind:value={cancelGroupScope} aria-label="Cancel scope"><option value="all">All active Kalshi orders</option><option value="event" disabled={!selectedEvent}>Current game</option><option value="strategy:basic">Basic orders</option><option value="strategy:iceberg">Iceberg orders</option><option value="strategy:follow">Follow orders</option><option value="exchange:Kalshi">Kalshi managed orders</option></select><button disabled={cancelingGroup || cancelScopeCount === 0} on:click={cancelGroup}>{cancelingGroup ? 'Canceling…' : `Cancel ${cancelScopeCount}`}</button><small aria-live="polite">{cancelGroupStatus}</small></div>{/if}
         <div class="table-head"><span>Game / bet</span><span>Exchange</span><span class="num">Quantity</span><span class="num">Limit</span><span>Status</span><span></span><span class="num">Cash risk</span></div>
-		{#each snapshot.orders as order}<div class="table-row compact linked-row" role="button" tabindex="0" title={`Open ${rowGame(order)} · ${rowDetail(order)}`} aria-label={`Open market for ${rowGame(order)} ${rowDetail(order)}`} on:click={() => openAccountMarket(order)} on:keydown={(event) => openAccountMarketKey(event, order)}><span><b>{rowGame(order)}</b><small>{rowDetail(order)}</small></span><span>{order.exchange}</span><span class="num">{#if editingOrderID === order.id}<input class="inline-order-input" aria-label="Remaining contracts" type="number" min="0.01" step="0.01" bind:value={editQuantity} on:click|stopPropagation />{:else}{qty(order.quantity - order.filledQuantity)}<small>remaining</small>{/if}</span><span class="num">{#if editingOrderID === order.id}<input class="inline-order-input" aria-label="Limit cents" type="number" min="0.01" max="99.99" step="0.01" bind:value={editLimit} on:click|stopPropagation />{:else}{order.limitPrice / 100}¢<small>{ml(rawML(order.limitPrice))}</small>{/if}</span><span><i class="pill {orderStatus(order).tone}">{orderStatus(order).label}</i>{#if orderNote(order)}<small>{orderNote(order)}</small>{/if}</span><span>{#if editingOrderID === order.id}<button class="resume-order" disabled={Boolean(savingOrderID)} on:click|stopPropagation={() => saveOrder(order)}>{savingOrderID ? 'Saving…' : 'Save'}</button><button class="cancel-order" on:click|stopPropagation={stopEditOrder}>Close</button>{:else if snapshot.health.tradingEnabled && workingOrders.includes(order)}<button class="resume-order" disabled={Boolean(editingOrderID)} on:click|stopPropagation={() => beginEditOrder(order)}>Edit</button>{/if}</span><span class="order-risk num">{money(order.cashRisk)}{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click|stopPropagation={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? 'Resuming…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingOrderID)} on:click|stopPropagation={() => cancelOrder(order)}>{cancelingOrderID === order.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
+		{#each snapshot.orders as order}<div class="table-row compact linked-row" role="button" tabindex="0" title={`Open ${rowGame(order)} · ${rowDetail(order)}`} aria-label={`Open market for ${rowGame(order)} ${rowDetail(order)}`} on:click={() => openAccountMarket(order)} on:keydown={(event) => openAccountMarketKey(event, order)}><span><b>{rowGame(order)}</b><small>{rowDetail(order)} · {ago(order.createdAt)}</small></span><span>{order.exchange}</span><span class="num">{#if editingOrderID === order.id}<input class="inline-order-input" aria-label="Remaining contracts" type="number" min="0.01" step="0.01" bind:value={editQuantity} on:click|stopPropagation on:keydown={(event) => editOrderKey(event, order)} />{:else}{qty(order.quantity - order.filledQuantity)}<small>remaining</small>{/if}</span><span class="num">{#if editingOrderID === order.id}<input class="inline-order-input" aria-label="Limit cents" type="number" min="0.01" max="99.99" step="0.01" bind:value={editLimit} on:click|stopPropagation on:keydown={(event) => editOrderKey(event, order)} />{:else}<b>{orderOdds(order)}</b><small>{order.limitPrice / 100}¢ · raw → fee included</small>{/if}</span><span><i class="pill {orderStatus(order).tone}">{orderStatus(order).label}</i>{#if orderNote(order)}<small>{orderNote(order)}</small>{/if}</span><span>{#if editingOrderID === order.id}<button class="resume-order" disabled={Boolean(savingOrderID) || editOverCap || editOverAvailable} on:click|stopPropagation={() => saveOrder(order)}>{savingOrderID ? 'Saving…' : 'Save'}</button><button class="cancel-order" on:click|stopPropagation={stopEditOrder}>Close</button>{:else if snapshot.health.tradingEnabled && workingOrders.includes(order)}<button class="resume-order" disabled={Boolean(editingOrderID)} on:click|stopPropagation={() => beginEditOrder(order)}>Edit</button>{/if}</span><span class="order-risk num">{#if editingOrderID === order.id}<b class:negative={editOverCap || editOverAvailable}>{money(editRiskQuote?.cost || 0)}</b><small>estimated all-in{editOverCap ? ' · over cap' : editOverAvailable ? ' · unavailable' : ''}</small>{:else}{money(order.cashRisk)}{/if}{#if snapshot.health.tradingEnabled && canResume(parentForOrder(order))}<button class="resume-order" disabled={Boolean(resumingParentID)} on:click|stopPropagation={() => resumeParent(parentForOrder(order)!)}>{resumingParentID === parentForOrder(order)?.id ? 'Resuming…' : 'Resume'}</button>{/if}{#if snapshot.health.tradingEnabled && workingOrders.includes(order)}<button class="cancel-order" disabled={Boolean(cancelingOrderID)} on:click|stopPropagation={() => cancelOrder(order)}>{cancelingOrderID === order.id ? 'Canceling…' : 'Cancel'}</button>{/if}</span></div>{:else}<div class="empty">No pending orders</div>{/each}
       {:else if trayTab === 'positions'}
         <div class="table-head"><span>Game / bet</span><span>Exchange</span><span class="num">Contracts</span><span class="num">Avg odds</span><span class="num">Exposure</span><span class="num">Fees</span><span class="num">Realized P&amp;L</span></div>
 		{#each snapshot.positions as position}<div class="table-row compact linked-row" role="button" tabindex="0" title={`Open ${rowGame(position)} · ${rowDetail(position)}`} aria-label={`Open market for ${rowGame(position)} ${rowDetail(position)}`} on:click={() => openAccountMarket(position)} on:keydown={(event) => openAccountMarketKey(event, position)}><span><b>{rowGame(position)}</b><small>{rowDetail(position)}</small></span><span>{position.exchange}</span><span class="num">{qty(Math.abs(position.quantity))}</span><span class="num"><b>{positionOdds(position)}</b><small>raw → fee included</small></span><span class="num">{money(position.cashRisk)}</span><span class="num">{money(position.feesPaid || 0)}</span><span class="num" class:positive={(position.realizedPnl || 0) >= 0} class:negative={(position.realizedPnl || 0) < 0}>{money(position.realizedPnl || 0)}</span></div>{:else}<div class="empty">No open positions</div>{/each}
@@ -555,7 +733,7 @@
         <div class="history-switch"><button class:active={historyMode === 'settlements'} on:click={() => showHistory('settlements')}>Settlements</button><button class:active={historyMode === 'audit'} on:click={() => showHistory('audit')}>System audit</button><span>{historyMode === 'audit' ? 'Loaded only when opened' : 'Exchange results'}</span></div>
         {#if historyMode === 'settlements'}
           <div class="table-head"><span>Game / bet</span><span>Exchange</span><span>Result</span><span class="num">Yes / No</span><span class="num">Revenue</span><span class="num">Fees</span><span class="num">Net P&amp;L</span></div>
-          {#each snapshot.settlements as settlement}<div class="table-row compact" title={settlement.ticker}><span><b>{rowGame(settlement)}</b><small>{rowDetail(settlement)} · {day(settlement.settledAt)}</small></span><span>{settlement.exchange}</span><span>{settlement.result.toUpperCase()}</span><span class="num">{qty(settlement.yesQuantity)} / {qty(settlement.noQuantity)}</span><span class="num">{money(settlement.revenue)}</span><span class="num">{money(settlement.fee)}</span><span class="num" class:positive={settlement.netPnl >= 0} class:negative={settlement.netPnl < 0}>{money(settlement.netPnl)}</span></div>{:else}<div class="empty">No settled markets yet</div>{/each}
+          {#each snapshot.settlements as settlement}<div class="table-row compact linked-row" role="button" tabindex="0" title={`Open ${rowGame(settlement)} · ${rowDetail(settlement)}`} aria-label={`Open market for ${rowGame(settlement)} ${rowDetail(settlement)}`} on:click={() => openAccountMarket(settlement)} on:keydown={(event) => openAccountMarketKey(event, settlement)}><span><b>{rowGame(settlement)}</b><small>{rowDetail(settlement)} · {day(settlement.settledAt)}</small></span><span>{settlement.exchange}</span><span>{settlement.result.toUpperCase()}</span><span class="num">{qty(settlement.yesQuantity)} / {qty(settlement.noQuantity)}</span><span class="num">{money(settlement.revenue)}</span><span class="num">{money(settlement.fee)}</span><span class="num" class:positive={settlement.netPnl >= 0} class:negative={settlement.netPnl < 0}>{money(settlement.netPnl)}</span></div>{:else}<div class="empty">No settled markets yet</div>{/each}
         {:else}
           <div class="audit-list">
             {#each auditRecords as record (record.id)}<article><span><b>{new Date(record.occurredAt).toLocaleString()}</b><small>Record #{record.id}</small></span><span><b>{auditTitle(record.kind)}</b><small>{auditSummary(record)}</small></span><details><summary>Details</summary><pre>{JSON.stringify(record.payload, null, 2)}</pre></details></article>{:else}{#if !auditLoading}<div class="empty">No order activity has been audited yet</div>{/if}{/each}
@@ -570,7 +748,7 @@
     <main class="settings-page">
       <header><h1>Settings</h1><p>Choose the sports PMBattle should load and subscribe to. Your choices are saved on this server.</p></header>
       <section class="settings-section safety-section">
-		<div class="settings-heading"><div><h2>Trading status</h2><p>Order entry is controlled when the server starts.</p></div><span class="safety-badge" class:armed={snapshot.health.tradingEnabled}>{snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'LIVE TRADING' : 'DEMO TRADING' : 'READ-ONLY'}</span></div>
+		<div class="settings-heading"><div><h2>Trading status</h2><p>Order entry is controlled when the server starts.</p></div><div class="settings-actions"><button disabled={refreshingAccount} on:click={refreshAccount}>{refreshingAccount ? 'Refreshing…' : 'Refresh account'}</button><span class="safety-badge" class:armed={snapshot.health.tradingEnabled}>{snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'LIVE TRADING' : 'DEMO TRADING' : 'READ-ONLY'}</span></div></div>
         <div class="safety-grid">
           <span><small>Environment</small><b>{snapshot.health.mode.toUpperCase()}</b></span>
           <span><small>Exchange feed</small><b>{snapshot.health.exchangeState.toUpperCase()}</b></span>
@@ -623,18 +801,21 @@
   {#if slipOpen && selectedQuote && selectedEvent}
     <aside class="order-slip" aria-label="Order slip">
       <header class:role-away={activeRole === 'away'} class:role-home={activeRole === 'home'} class:role-over={activeRole === 'over'} class:role-under={activeRole === 'under'}><div><small>ORDER SLIP · KALSHI · <i class="selection-role">{activeRole.toUpperCase()}</i></small><b>{activeOutcome} {selectedMarket?.line || ''}</b></div><button aria-label="Close order slip" on:click={() => slipOpen = false}>×</button></header>
-      <div class="slip-price"><span>{slipIntent === 'cross' ? `Buy ${bookSide.toUpperCase()}` : `Join ${bookSide.toUpperCase()} bid`}</span><b>{ml(rawML(slipPrice))} <i>→ {ml(slipQuote?.moneyline)}</i></b><small>raw → fee included</small></div>
-      <div class="slip-strategies"><button class:active={slipStrategy === 'basic'} on:click={() => slipStrategy = 'basic'}>Basic</button><button class:active={slipStrategy === 'iceberg'} on:click={() => slipStrategy = 'iceberg'}>Iceberg</button><button class:active={slipStrategy === 'follow'} on:click={() => { slipStrategy = 'follow'; slipPolicy = 'post_only' }}>Follow</button></div>
+      <div class="slip-price"><span>{slipIntent === 'cross' ? `Buy ${bookSide.toUpperCase()}` : `Join ${bookSide.toUpperCase()} bid`}</span><b>{ml(rawML(slipPrice))} <i>→ {ml(slipQuote?.moneyline)}</i></b><small>raw → conservative taker</small></div>
+      <div class="slip-strategies"><button class:active={slipStrategy === 'basic'} on:click={() => slipStrategy = 'basic'}>Basic</button><button class:active={slipStrategy === 'iceberg'} on:click={() => { slipStrategy = 'iceberg'; if (slipPolicy === 'ioc') slipPolicy = 'limit' }}>Iceberg</button><button class:active={slipStrategy === 'follow'} on:click={() => { slipStrategy = 'follow'; slipPolicy = 'post_only' }}>Follow</button></div>
       <div class="slip-fields">
         <label><span>Cash at risk</span><div><i>$</i><input type="number" min="1" step="1" bind:value={slipRisk} /></div></label>
-        <label><span>Worst all-in price</span><input type="number" step="1" bind:value={slipCap} /></label>
-        <label><span>Order behavior</span><select bind:value={slipPolicy} disabled={slipStrategy === 'follow'}><option value="limit">Limit</option><option value="post_only">Post only</option><option value="ioc">Immediate or cancel</option></select></label>
+        <label><span>Worst all-in odds</span><input type="number" step="1" bind:value={slipCap} on:input={() => slipCapAuto = false} /></label>
+        <label><span>Order behavior</span><select bind:value={slipPolicy} disabled={slipStrategy === 'follow'}><option value="limit">Limit</option><option value="post_only">Post only</option><option value="ioc" disabled={slipStrategy !== 'basic'}>Immediate or cancel</option></select></label>
         {#if slipStrategy === 'iceberg'}<label><span>Visible contracts</span><input type="number" min="1" step="1" bind:value={slipSlice} /></label>{/if}
       </div>
-      <div class="slip-summary"><span>Estimated contracts <b>{qty(slipQuantity)}</b></span><span>Fee-adjusted cap <b>{ml(Number(slipCap))}</b></span></div>
+      <div class="slip-summary"><span>Contracts <b>{qty(slipQuantity)}</b></span><span>Maker <b>{ml(slipMakerQuote?.moneyline)} · {money(slipMakerQuote?.fee || 0)} fee</b></span><span>Taker <b>{ml(slipQuote?.moneyline)} · {money(slipQuote?.fee || 0)} fee</b></span><span>Reserved <b>{money(slipQuote?.cost || 0)}</b></span></div>
       {#if slipOverCap}<p class="slip-status" role="alert">Cash at risk is above this server's per-order cap of {money(snapshot.health.maxCashRisk || 0)}.</p>{/if}
+      {#if slipCapInvalid}<p class="slip-status" role="alert">Enter American odds of +100 or higher, or -100 or lower.</p>{:else if slipBeyondCap}<p class="slip-status" role="alert">The fee-included price is worse than your limit.</p>{/if}
+      {#if slipInvalidSlice}<p class="slip-status" role="alert">Visible iceberg contracts must be above zero and smaller than the estimated total of {qty(slipQuantity)}.</p>{/if}
+      {#if !bookActionable}<p class="slip-status" role="alert">Live book synchronization was lost. Review is disabled until a fresh snapshot arrives.</p>{/if}
       {#if slipStrategy === 'follow'}<p class="slip-status">Joins the live top bid, stays post-only, and pauses at your all-in cap or on stale data.</p>{/if}
-	  <button class="submit-order" disabled={submittingOrder || !snapshot.health.tradingEnabled || !slipPrice || Number(slipRisk) <= 0 || slipOverCap} on:click={submitOrder}>{submittingOrder ? 'Checking Kalshi…' : snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'Review & place real order' : 'Place demo order' : 'Trading locked'}</button>
+	  <button class="submit-order" disabled={submittingOrder || !snapshot.health.tradingEnabled || !bookActionable || !slipPrice || !slipQuantity || Number(slipRisk) <= 0 || slipOverCap || slipCapInvalid || slipBeyondCap || slipInvalidSlice} on:click={submitOrder}>{submittingOrder ? 'Checking Kalshi…' : snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'Review & place real order' : 'Place demo order' : 'Trading locked'}</button>
       {#if slipStatus}<p class="slip-status" aria-live="polite">{slipStatus}</p>{/if}
     </aside>
   {/if}

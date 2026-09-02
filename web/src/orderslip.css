@@ -46,7 +46,7 @@
 .slip-fields label > div i { padding-left: 7px; color: var(--muted); font-style: normal; }
 .slip-fields label > div input { border: 0; }
 
-.slip-summary { display: flex; justify-content: space-between; gap: 8px; padding: 0 11px 9px; color: var(--muted); font-size: 9px; }
+.slip-summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px 10px; padding: 0 11px 9px; color: var(--muted); font-size: 9px; }
 .slip-summary b { color: var(--text); }
 .submit-order { width: calc(100% - 20px); margin: 0 10px 10px; padding: 9px; border: 0; border-radius: 4px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 600; cursor: pointer; }
 .submit-order:disabled { background: var(--panel-2); color: var(--muted); cursor: not-allowed; }

@@ -8,6 +8,16 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 ha
 
 The owner is not a programmer and places every order personally in the browser. No AI session may place, amend, cancel, or resume an order.
 
+### Reviewed local release: September 2, 2026
+
+The September 2 usability/resilience batch is reviewed and ready. It adds keyboard-first board navigation, bounded schedule/fill rendering, automatic snapshot and WebSocket recovery, explicit browser connection state, stale-book action blocking, exact fee-inclusive cash sizing, maker/taker previews, iceberg input validation, clickable fills/history, scoped live-cancel confirmations, and a manual read-only account refresh in Settings.
+
+The backend now applies the shared available-bankroll guard to basic/reconciled order amendments as well as new parent orders. An edit may reuse its current reservation but cannot consume cash reserved for other orders or hidden strategy commitments; a rejected edit never reaches Kalshi. Successful acknowledgements immediately adjust the displayed available balance until reconciliation supplies the authoritative account value.
+
+Review evidence: `npm run check` completed with 0 errors and 0 warnings, the production frontend bundle built successfully, `go test ./...` passed under Go 1.26.5, and an embedded Windows review executable built successfully. A separate simulated, read-only server was browser-tested on port 18080: schedule filters, an expanded live book, clickable prices, conservative order sizing, Settings account refresh, reconnect indicators, and console output were checked without any exchange mutation. The owner's production server on port 8080 was not restarted or changed.
+
+The final frontend bundle remains light: 106.30 KB JavaScript and 24.79 KB CSS before gzip (36.79 KB and 5.25 KB gzipped).
+
 ### Session log: September 1, 2026 (all merged to `main`, CI green)
 
 Eleven commits, oldest first. `git log --oneline 99eb1c4..0adbc50` reproduces this list.
