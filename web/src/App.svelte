@@ -123,7 +123,10 @@
     }
     return Math.floor(low / 100) * 100
   }
-  const levelPrice = (level: BookLevel) => `${ml(rawML(level.price))} → ${ml(takerQuote(level).moneyline)}`
+  const levelPrice = (level: BookLevel, maker = false) => {
+    const quote = maker ? makerQuote(level) : takerQuote(level)
+    return `${ml(rawML(level.price))} → ${ml(quote.moneyline)}`
+  }
   function orderOdds(order: Order) {
     const remaining = Math.max(100, order.quantity - order.filledQuantity)
     return `${ml(rawML(order.limitPrice))} → ${ml(takerQuote({ price: order.limitPrice, quantity: remaining }).moneyline)}`
@@ -693,7 +696,7 @@
               <div class="book-center" class:role-away={activeRole === 'away'} class:role-home={activeRole === 'home'} class:role-over={activeRole === 'over'} class:role-under={activeRole === 'under'}><b>{activeRole.toUpperCase()} · Trade {bookSide === 'yes' ? 'Yes' : 'No'}</b><span>{activeOutcome}</span></div>
               <div class="ladder bids">
                 {#each displayBids as level}
-                  <button class="ladder-row" disabled={!bookActionable} title={bookActionable ? 'Join this bid in the order slip' : 'Waiting for a synchronized live book'} on:click={() => chooseBookPrice(level, 'join')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayBids.map(value => Number(value.quantity))) * 100)}%`}><b>BID</b><span>{levelPrice(level)}</span><span>{qty(level.quantity)}</span><span>{money(takerQuote(level).cost)}</span></button>
+                  <button class="ladder-row" disabled={!bookActionable} title={bookActionable ? 'Join this bid in the order slip' : 'Waiting for a synchronized live book'} on:click={() => chooseBookPrice(level, 'join')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayBids.map(value => Number(value.quantity))) * 100)}%`}><b>BID</b><span>{levelPrice(level, true)}</span><span>{qty(level.quantity)}</span><span>{money(makerQuote(level).cost)}</span></button>
                 {/each}
               </div>
             {:else}

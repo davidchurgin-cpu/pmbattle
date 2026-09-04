@@ -20,6 +20,8 @@ Review evidence: `npm run check` completed with 0 errors and 0 warnings, the pro
 
 The final frontend bundle remains light: 106.30 KB JavaScript and 24.79 KB CSS before gzip (36.79 KB and 5.25 KB gzipped).
 
+Order-book fee semantics: ask rows represent immediately crossing liquidity and display taker-fee all-in odds/cost. Bid rows represent joining the book post-only and display maker-fee all-in odds/cost. Parent cash reservation and the automatic hard price cap remain conservatively sized with the taker fee even when an order is intended to rest.
+
 ### Session log: September 1, 2026 (all merged to `main`, CI green)
 
 Eleven commits, oldest first. `git log --oneline 99eb1c4..0adbc50` reproduces this list.
