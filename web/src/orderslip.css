@@ -9,6 +9,9 @@
 
 .ladder-row:hover { background: var(--accent-soft); }
 .ladder-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ladder-row.own-level { z-index: 1; outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-soft); }
+.ladder-row.own-level > b { display: flex; align-items: center; gap: 6px; }
+.ladder-row.own-level > b i { padding: 2px 5px; border-radius: 3px; background: var(--accent); color: #fff; font-size: 8px; font-style: normal; letter-spacing: .04em; white-space: nowrap; }
 
 .order-slip {
   position: fixed;

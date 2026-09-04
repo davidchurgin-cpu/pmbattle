@@ -22,6 +22,8 @@ The final frontend bundle remains light: 106.30 KB JavaScript and 24.79 KB CSS b
 
 Order-book fee semantics: ask rows represent immediately crossing liquidity and display taker-fee all-in odds/cost. Bid rows represent joining the book post-only and display maker-fee all-in odds/cost. Parent cash reservation and the automatic hard price cap remain conservatively sized with the taker fee even when an order is intended to rest.
 
+The order-book ladder identifies the owner's resting bid levels from the reconciled account stream. An exact ticker, contract-side, and limit-price match receives a `YOU` marker, high-contrast outline, and the summed remaining quantity when multiple active orders share that level. This is derived entirely from the existing account snapshot and adds no market-data subscription or polling work.
+
 ### Session log: September 1, 2026 (all merged to `main`, CI green)
 
 Eleven commits, oldest first. `git log --oneline 99eb1c4..0adbc50` reproduces this list.

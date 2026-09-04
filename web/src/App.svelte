@@ -131,6 +131,10 @@
     const remaining = Math.max(100, order.quantity - order.filledQuantity)
     return `${ml(rawML(order.limitPrice))} → ${ml(takerQuote({ price: order.limitPrice, quantity: remaining }).moneyline)}`
   }
+  function ownOrdersAtLevel(level: BookLevel) {
+    const matches = workingOrders.filter(order => order.ticker === selectedQuote?.ticker && order.side === bookSide && order.limitPrice === level.price)
+    return { count: matches.length, quantity: matches.reduce((total, order) => total + Math.max(0, order.quantity - order.filledQuantity), 0) }
+  }
   const marketLabel = (market: MarketView | null) => market?.type === 'spread' ? 'Spread' : market?.type === 'total' ? 'Total' : 'Moneyline'
   type SelectionRole = 'away' | 'home' | 'over' | 'under'
   function quoteRole(event: Event | null, market: MarketView | null, quote: PriceQuote | null): SelectionRole {
@@ -696,7 +700,8 @@
               <div class="book-center" class:role-away={activeRole === 'away'} class:role-home={activeRole === 'home'} class:role-over={activeRole === 'over'} class:role-under={activeRole === 'under'}><b>{activeRole.toUpperCase()} · Trade {bookSide === 'yes' ? 'Yes' : 'No'}</b><span>{activeOutcome}</span></div>
               <div class="ladder bids">
                 {#each displayBids as level}
-                  <button class="ladder-row" disabled={!bookActionable} title={bookActionable ? 'Join this bid in the order slip' : 'Waiting for a synchronized live book'} on:click={() => chooseBookPrice(level, 'join')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayBids.map(value => Number(value.quantity))) * 100)}%`}><b>BID</b><span>{levelPrice(level, true)}</span><span>{qty(level.quantity)}</span><span>{money(makerQuote(level).cost)}</span></button>
+                  {@const own = ownOrdersAtLevel(level)}
+                  <button class="ladder-row" class:own-level={own.quantity > 0} disabled={!bookActionable} title={own.quantity > 0 ? `Your ${qty(own.quantity)} remaining contracts are resting at this price` : bookActionable ? 'Join this bid in the order slip' : 'Waiting for a synchronized live book'} on:click={() => chooseBookPrice(level, 'join')} style={`--depth:${Math.min(100, Number(level.quantity) / Math.max(1, ...displayBids.map(value => Number(value.quantity))) * 100)}%`}><b>BID{#if own.quantity > 0}<i>YOU · {qty(own.quantity)}</i>{/if}</b><span>{levelPrice(level, true)}</span><span>{qty(level.quantity)}</span><span>{money(makerQuote(level).cost)}</span></button>
                 {/each}
               </div>
             {:else}
