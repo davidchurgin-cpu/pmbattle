@@ -20,6 +20,12 @@ The pages share one in-memory account snapshot and do not add polling, chart lib
 
 Next account-workspace refinements: add server-backed date/sport/league filtering when histories outgrow the bounded snapshot, add CSV export, and add a retention/archive policy for completed parents and audit records. These are intentionally not on the live critical path yet.
 
+### Quick Order dock: September 4, 2026
+
+A docked-right Quick Order form is now available from every page through the top-bar button or the Q shortcut. Entering either team's rotation number finds the current schedule event and preselects that participant. The panel then switches among mapped moneyline, spread, and total markets; preserves the team choice for side-based markets; offers available lines; and reuses the existing fixed-point cash-risk sizing, raw-to-fee-included American odds, maker/taker estimates, Basic/Iceberg/Follow controls, book synchronization gate, and production confirmation.
+
+The initial implementation deliberately has one order-entry engine rather than a second shortcut-specific submit path. A simulated, trading-locked browser test entered #151, resolved Fresno State at USC, switched from Moneyline to Spread, and verified that team, price, contracts, fees, cap, and reserved risk updated without sending an order. Frontend check/build and the full Go suite passed. The running port-8080 executable must be rebuilt and restarted to show this dock.
+
 ### Reviewed local release: September 2, 2026
 
 The September 2 usability/resilience batch is reviewed and ready. It adds keyboard-first board navigation, bounded schedule/fill rendering, automatic snapshot and WebSocket recovery, explicit browser connection state, stale-book action blocking, exact fee-inclusive cash sizing, maker/taker previews, iceberg input validation, clickable fills/history, scoped live-cancel confirmations, and a manual read-only account refresh in Settings.

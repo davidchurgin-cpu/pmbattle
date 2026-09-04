@@ -12,6 +12,9 @@
 .ladder-row.own-level { z-index: 1; outline: 2px solid var(--accent); outline-offset: -2px; background: var(--accent-soft); }
 .ladder-row.own-level > b { display: flex; align-items: center; gap: 6px; }
 .ladder-row.own-level > b i { padding: 2px 5px; border-radius: 3px; background: var(--accent); color: #fff; font-size: 8px; font-style: normal; letter-spacing: .04em; white-space: nowrap; }
+.quick-order-button { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--input); color: var(--text); font-size: 10px; white-space: nowrap; cursor: pointer; }
+.quick-order-button.active { border-color: var(--accent); background: var(--accent-soft); }
+.quick-order-button kbd { padding: 1px 4px; border: 1px solid var(--line); border-radius: 3px; color: var(--muted); font-size: 8px; }
 
 .order-slip {
   position: fixed;
@@ -25,6 +28,28 @@
   background: var(--panel);
   box-shadow: 0 12px 38px rgb(0 0 0 / 24%);
 }
+.quick-order-dock { top: 58px; right: 0; bottom: 58px; width: min(370px, calc(100vw - 20px)); max-height: none; overflow-y: auto; border-radius: 7px 0 0 0; }
+.quick-game-lookup { padding: 10px 11px; border-bottom: 1px solid var(--line); }
+.quick-game-lookup label > span, .quick-line > span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+.quick-game-lookup label > div { display: grid; grid-template-columns: 1fr auto; }
+.quick-game-lookup input, .quick-game-lookup button, .quick-line select { height: 34px; border: 1px solid var(--line); background: var(--input); color: var(--text); }
+.quick-game-lookup input { min-width: 0; padding: 6px 9px; border-radius: 4px 0 0 4px; font-size: 15px; font-weight: 700; }
+.quick-game-lookup button { padding: 0 14px; border-left: 0; border-radius: 0 4px 4px 0; background: var(--accent); border-color: var(--accent); color: #fff; cursor: pointer; }
+.quick-game-lookup p { margin: 6px 0 0; color: var(--danger); font-size: 9px; }
+.quick-matchup { display: grid; gap: 3px; padding: 9px 11px; border-bottom: 1px solid var(--line); }
+.quick-matchup small { color: var(--muted); font-size: 8px; text-transform: uppercase; }
+.quick-matchup b { font-size: 11px; }
+.quick-market-tabs, .quick-sides { display: grid; gap: 4px; padding: 8px 10px 0; }
+.quick-market-tabs { grid-template-columns: repeat(3, 1fr); }
+.quick-sides { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.quick-market-tabs button, .quick-sides button { min-width: 0; padding: 7px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--input); color: var(--text); font-size: 9px; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quick-market-tabs button.active, .quick-sides button.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 -2px var(--accent); }
+.quick-market-tabs button:disabled, .quick-sides button:disabled { opacity: .4; cursor: default; }
+.quick-sides button b { display: block; margin-top: 3px; font-size: 12px; }
+.quick-line { display: block; padding: 8px 10px 0; }
+.quick-line select { width: 100%; padding: 5px 7px; border-radius: 4px; }
+.quick-empty { display: grid; gap: 5px; padding: 28px 20px; color: var(--muted); text-align: center; font-size: 10px; }
+.quick-empty b { color: var(--text); font-size: 13px; }
 
 .order-slip header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; border-bottom: 1px solid var(--line); }
 .order-slip header small, .order-slip header b { display: block; }
@@ -56,5 +81,6 @@
 .slip-status { margin: 0; padding: 0 11px 10px; color: var(--muted); font-size: 9px; }
 
 @media (max-width: 560px) {
-  .order-slip { right: 5px; bottom: 51px; width: calc(100vw - 10px); }
+  .order-slip { right: 0; bottom: 51px; width: 100vw; }
+  .quick-order-dock { top: 0; border-radius: 0; }
 }

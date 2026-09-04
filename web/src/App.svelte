@@ -35,6 +35,9 @@
   let expandedEventID = ''
   let bookSide: 'yes' | 'no' = 'yes'
   let slipOpen = false
+  let quickGame = ''
+  let quickLookupError = ''
+  let quickRotation = ''
   let slipIntent: 'cross' | 'join' = 'cross'
   let slipPrice = 0
   let slipRisk = '100'
@@ -375,6 +378,45 @@
     const market = event.markets?.find(value => value.home || value.away || value.over || value.under)
     select(event, market?.home || market?.away || market?.over || market?.under, market)
   }
+  function eventMarket(event: Event, type: MarketView['type']) {
+    return event.markets?.find(market => market.type === type && (market.away || market.home || market.over || market.under))
+  }
+  async function quickSelect(event: Event, market: MarketView, quote?: PriceQuote) {
+    if (!quote) return
+    quickLookupError = ''
+    quickRotation = event.participants.find(participant => participant.name === quote.outcome)?.rotation || quickRotation
+    await select(event, quote, market)
+    slipPrice = quote.rawPrice
+    slipIntent = 'cross'
+    slipPolicy = 'limit'
+    slipCapAuto = true
+    slipStatus = ''
+    slipOpen = true
+  }
+  async function chooseQuickMarket(type: MarketView['type']) {
+    if (!selectedEvent) return
+    const market = eventMarket(selectedEvent, type)
+    if (!market) return
+    const participantIndex = selectedEvent.participants.findIndex(participant => participant.rotation === quickRotation)
+    const quote = type === 'total' ? market.over || market.under : participantIndex === 1 ? market.home || market.away : market.away || market.home
+    await quickSelect(selectedEvent, market, quote)
+  }
+  async function chooseQuickSide(quote?: PriceQuote) {
+    if (!selectedEvent || !selectedMarket || !quote) return
+    await quickSelect(selectedEvent, selectedMarket, quote)
+  }
+  async function lookupQuickGame() {
+    const rotation = quickGame.trim()
+    if (!rotation) { quickLookupError = 'Enter a rotation or game number.'; return }
+    const event = currentEvents.find(candidate => candidate.participants.some(participant => participant.rotation === rotation))
+    if (!event) { quickLookupError = `No current game found for #${rotation}.`; return }
+    const participantIndex = event.participants.findIndex(participant => participant.rotation === rotation)
+    const market = eventMarket(event, 'moneyline') || eventMarket(event, 'spread') || eventMarket(event, 'total')
+    const quote = market?.type === 'total' ? market.over || market.under : participantIndex === 1 ? market?.home || market?.away : market?.away || market?.home
+    if (!market || !quote) { quickLookupError = `#${rotation} is scheduled, but no mapped Kalshi market is available.`; return }
+    quickRotation = rotation
+    await quickSelect(event, market, quote)
+  }
   function toggleGameKey(key: KeyboardEvent, event: Event) {
     if (key.target !== key.currentTarget) return
     if (key.key === 'Enter' || key.key === ' ') { key.preventDefault(); toggleGame(event) }
@@ -400,6 +442,9 @@
     if (event.key === '/' && !isTypingTarget(event.target)) {
       event.preventDefault(); view = 'schedule'; await tick(); searchInput?.focus(); searchInput?.select(); return
     }
+    if (event.key.toLowerCase() === 'q' && !isTypingTarget(event.target)) {
+      event.preventDefault(); slipOpen = true; await tick(); document.querySelector<HTMLInputElement>('.quick-game-input')?.focus(); return
+    }
     if (event.key === 'Escape') {
       if (editingOrderID) stopEditOrder()
       else if (slipOpen) slipOpen = false
@@ -418,13 +463,13 @@
       event.preventDefault(); toggleGame(visibleEvents[keyboardIndex])
     }
   }
-  function selectOption(option: MarketOption) {
+  async function selectOption(option: MarketOption) {
     if (!selectedEvent || !selectedMarket || !selectedQuote) return
     let quote: PriceQuote | undefined
     if (selectedMarket.type === 'spread') quote = selectedQuote.outcome === selectedEvent.participants[0]?.name ? option.away : option.home
     if (selectedMarket.type === 'total') quote = selectedQuote.outcome === 'Over' ? option.over : option.under
     const market: MarketView = { ...selectedMarket, line: option.line, away: option.away, home: option.home, over: option.over, under: option.under }
-    select(selectedEvent, quote, market)
+    await quickSelect(selectedEvent, market, quote)
   }
   function chooseBookPrice(level: BookLevel, intent: 'cross' | 'join') {
     if (!bookActionable) return
@@ -698,6 +743,7 @@
     <strong class="brand">PMBATTLE</strong>
     <nav class="primary-nav" aria-label="Application"><button class:active={view === 'schedule'} on:click={() => navigate('schedule')}>Schedule</button><button class:active={view === 'orders'} on:click={() => navigate('orders')}>Orders</button><button class:active={view === 'positions'} on:click={() => navigate('positions')}>Positions</button><button class:active={view === 'fills'} on:click={() => navigate('fills')}>Fills</button><button class:active={view === 'history'} on:click={() => navigate('history')}>History</button><button class:active={view === 'settings'} on:click={() => navigate('settings')}>Settings</button></nav>
     {#if view === 'schedule'}<label class="search"><span aria-hidden="true">⌕</span><input bind:this={searchInput} bind:value={query} on:input={resetGameBatch} aria-label="Search games" placeholder="Search game # or team" /></label>{:else if view !== 'settings'}<label class="search"><span aria-hidden="true">⌕</span><input bind:value={accountQuery} on:input={() => accountDisplayLimit = 100} aria-label={`Search ${view}`} placeholder="Search team, game #, market or ticker" /></label>{/if}
+    <button class="quick-order-button" class:active={slipOpen} on:click={() => slipOpen = !slipOpen}>Quick order <kbd>Q</kbd></button>
     <div class="health" class:is-stale={snapshot.health.status !== 'ok' || browserStreamState !== 'live'} title={`Browser stream: ${browserStreamState}`}><i></i><span>{snapshot.health.mode.toUpperCase()} · {snapshot.health.exchangeState.toUpperCase()} · UI {browserStreamState.toUpperCase()}</span></div>
     <div class="theme"><button class:active={theme === 'light'} on:click={() => setTheme('light')}>Light</button><button class:active={theme === 'dark'} on:click={() => setTheme('dark')}>Dark</button></div>
   </header>
@@ -886,9 +932,22 @@
       <article class="fill-notice"><i></i><div><small>FILL RECEIVED</small><b>{fillName(notice.fill)}</b><span>{rowGame(notice.fill)} · {qty(notice.fill.quantity)} @ {ml(notice.fill.allInMoneyline)}</span></div><button on:click={() => viewFill(notice.key)}>View</button><button class="notice-close" aria-label="Dismiss fill notification" on:click={() => dismissNotice(notice.key)}>×</button></article>
     {/each}
   </section>
-  {#if slipOpen && selectedQuote && selectedEvent}
-    <aside class="order-slip" aria-label="Order slip">
-      <header class:role-away={activeRole === 'away'} class:role-home={activeRole === 'home'} class:role-over={activeRole === 'over'} class:role-under={activeRole === 'under'}><div><small>ORDER SLIP · KALSHI · <i class="selection-role">{activeRole.toUpperCase()}</i></small><b>{activeOutcome} {selectedMarket?.line || ''}</b></div><button aria-label="Close order slip" on:click={() => slipOpen = false}>×</button></header>
+  {#if slipOpen}
+    <aside class="order-slip quick-order-dock" aria-label="Quick order">
+      <header class:role-away={selectedQuote && activeRole === 'away'} class:role-home={selectedQuote && activeRole === 'home'} class:role-over={selectedQuote && activeRole === 'over'} class:role-under={selectedQuote && activeRole === 'under'}><div><small>QUICK ORDER · KALSHI</small><b>{selectedQuote ? `${activeOutcome} ${selectedMarket?.line || ''}` : 'Enter a game number'}</b></div><button aria-label="Close quick order" on:click={() => slipOpen = false}>×</button></header>
+      <form class="quick-game-lookup" on:submit|preventDefault={lookupQuickGame}><label><span>Game or rotation #</span><div><input class="quick-game-input" inputmode="numeric" autocomplete="off" bind:value={quickGame} placeholder="151 or 152" /><button type="submit">Load</button></div></label>{#if quickLookupError}<p>{quickLookupError}</p>{/if}</form>
+      {#if selectedQuote && selectedEvent && selectedMarket}
+      <section class="quick-matchup"><small>{selectedEvent.league} · {day(selectedEvent.startTime)} {time(selectedEvent.startTime)}</small><b>{selectedEvent.participants.map(participant => `#${participant.rotation} ${participant.name}`).join(' at ')}</b></section>
+      <div class="quick-market-tabs">{#each ['moneyline', 'spread', 'total'] as type}<button class:active={selectedMarket.type === type} disabled={!eventMarket(selectedEvent, type as MarketView['type'])} on:click={() => chooseQuickMarket(type as MarketView['type'])}>{type === 'moneyline' ? 'Moneyline' : type[0].toUpperCase() + type.slice(1)}</button>{/each}</div>
+      <div class="quick-sides">
+        {#if selectedMarket.type === 'total'}
+          <button class:active={activeRole === 'over'} disabled={!selectedMarket.over} on:click={() => chooseQuickSide(selectedMarket?.over)}>Over {selectedMarket.line}<b>{ml(selectedMarket.over?.allInMoneyline)}</b></button>
+          <button class:active={activeRole === 'under'} disabled={!selectedMarket.under} on:click={() => chooseQuickSide(selectedMarket?.under)}>Under {selectedMarket.line}<b>{ml(selectedMarket.under?.allInMoneyline)}</b></button>
+        {:else}
+          {#each selectedEvent.participants as participant, index}<button class:active={activeOutcome === participant.name} disabled={!(index === 0 ? selectedMarket.away : selectedMarket.home)} on:click={() => chooseQuickSide(index === 0 ? selectedMarket?.away : selectedMarket?.home)}>#{participant.rotation} {participant.name}<b>{ml((index === 0 ? selectedMarket.away : selectedMarket.home)?.allInMoneyline)}</b></button>{/each}
+        {/if}
+      </div>
+      {#if selectedMarket.options && selectedMarket.options.length > 1}<label class="quick-line"><span>Line</span><select value={selectedMarket.line} on:change={(event) => selectOption(selectedMarket!.options!.find(option => option.line === event.currentTarget.value)!)}>{#each selectedMarket.options as option}<option value={option.line}>{selectedMarket.type === 'total' ? `O/U ${option.line}` : `Spread ${option.line}`}</option>{/each}</select></label>{/if}
       <div class="slip-price"><span>{slipIntent === 'cross' ? `Buy ${bookSide.toUpperCase()}` : `Join ${bookSide.toUpperCase()} bid`}</span><b>{ml(rawML(slipPrice))} <i>→ {ml(slipQuote?.moneyline)}</i></b><small>raw → conservative taker</small></div>
       <div class="slip-strategies"><button class:active={slipStrategy === 'basic'} on:click={() => slipStrategy = 'basic'}>Basic</button><button class:active={slipStrategy === 'iceberg'} on:click={() => { slipStrategy = 'iceberg'; if (slipPolicy === 'ioc') slipPolicy = 'limit' }}>Iceberg</button><button class:active={slipStrategy === 'follow'} on:click={() => { slipStrategy = 'follow'; slipPolicy = 'post_only' }}>Follow</button></div>
       <div class="slip-fields">
@@ -905,6 +964,9 @@
       {#if slipStrategy === 'follow'}<p class="slip-status">Joins the live top bid, stays post-only, and pauses at your all-in cap or on stale data.</p>{/if}
 	  <button class="submit-order" disabled={submittingOrder || !snapshot.health.tradingEnabled || !bookActionable || !slipPrice || !slipQuantity || Number(slipRisk) <= 0 || slipOverCap || slipCapInvalid || slipBeyondCap || slipInvalidSlice} on:click={submitOrder}>{submittingOrder ? 'Checking Kalshi…' : snapshot.health.tradingEnabled ? snapshot.health.mode === 'live' ? 'Review & place real order' : 'Place demo order' : 'Trading locked'}</button>
       {#if slipStatus}<p class="slip-status" aria-live="polite">{slipStatus}</p>{/if}
+      {:else}
+        <div class="quick-empty"><b>Fast entry by game number</b><span>Type either team's rotation number. PMBattle will load the matchup and preselect that team.</span></div>
+      {/if}
     </aside>
   {/if}
 </div>

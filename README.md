@@ -18,7 +18,8 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - Kalshi demo/production endpoints, RSA-PSS request signing, and authenticated WebSocket connection
 - Click-to-expand, full-depth inline order-book ladders with bids, asks, contracts, cash totals, and raw-to-fee-included moneylines
 - On-demand order-book subscriptions: PMBattle loads the selected market plus only the books required by active follow parents, releasing all other books
-- Clickable Yes/No bid and ask levels that populate a floating bottom order slip with the exact price, cash-at-risk field, fee-adjusted cap, and basic/iceberg/follow controls
+- Clickable Yes/No bid and ask levels that populate the shared Quick Order dock with the exact price, cash-at-risk field, fee-adjusted cap, and basic/iceberg/follow controls
+- Docked-right Quick Order entry from any page: press Q or click Quick order, enter either team's rotation number, and PMBattle loads the matchup, preselects that team, and exposes its moneyline, spread, total, line, fee, risk, and strategy controls
 - Demo-only basic limit, post-only, IOC, and cancel commands sized from a parent cash-risk target with a hard fee-adjusted moneyline cap
 - Iceberg parents that expose one configurable slice, refresh only after the active slice is completely filled, and cancel only the currently working slice
 - Follow parents that join the live same-side top bid, stay post-only, never cross automatically, resize within cash risk, pause on stale data or the fee-adjusted cap, and throttle queue-losing amendments
