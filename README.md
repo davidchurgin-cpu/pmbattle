@@ -28,7 +28,7 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - Durable parent orders that survive restart, deduplicate fills, and reduce remaining risk before fill notifications reach the browser
 - Order-scoped REST fill recovery after startup and account-stream reconnects, plus the authenticated read-only available bankroll
 - Paginated REST recovery of every open Kalshi position and settled market, with fixed-point exposure, fees, realized P&L, and recent settlement history persisted across restarts
-- A live Positions view for unsettled exposure and a separate History view for up to 500 recent settlements; settled markets never count as current cash at risk
+- Dedicated Orders, Positions, Fills, and History workspaces with stable URLs, instant shared search, summary totals, market filters, expandable detail rows, and one-click return to the matching market
 - Dashboard cash at risk includes authenticated open-position exposure plus resting-order risk, with the managed parent total used as a conservative fallback during feed timing gaps
 - One shared available-bankroll guard serializes parent submissions and reserves each parent's full future cash-risk target, including hidden iceberg slices; an insufficient request is rejected before any exchange call
 - Exchange-neutral smart-routing planner allocates one parent cash-risk target across venue balances and fee-included liquidity in best-price order, shares each venue's bankroll across its levels, and reports any safely unallocated remainder
@@ -36,7 +36,7 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - A compact Settings safety panel shows environment, exchange/account state, last reconciliation, mapped-market count, available trading balance, cash at risk, and the server-controlled order-entry lock
 - Positions, Orders, Fills, and History name every row by game and bet ("#301 Clemson at #302 LSU", "Over 52.5") instead of the exchange's ticker code, with the ticker kept as hover text; settled markets stay readable because their names are stored locally
 - Order status shown as a colour-coded chip, fills timed as "3m ago", and every money column right-aligned on shared digit widths for fast scanning
-- Fixed bottom activity dock with always-visible position/order/fill counts, working-order status, and expandable detail tables, plus immediate visual alerts for every newly streamed full or partial fill
+- Slim fixed account monitor with always-visible position/order/fill/history counts and one-click workspace navigation, plus immediate visual alerts for every newly streamed full or partial fill
 - Compact full-width sportsbook rows; genuinely absent market types say `Not listed`, while listed contracts without an offer say `Listed · no offer`
 - Explicit, accessible side identities across the board, book, and slip: Away blue, Home purple, Over green, and Under amber
 - Sequence-checked in-memory order books with stale-book detection
@@ -56,6 +56,8 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - Windows, Linux, and Docker builds
 
 ## Quick start
+
+The main workspaces are available at /, /orders, /positions, /fills, /history, and /settings. Direct links and browser Back/Forward navigation are supported.
 
 ### Run the prebuilt application
 

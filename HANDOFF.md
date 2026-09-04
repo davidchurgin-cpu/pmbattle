@@ -8,6 +8,16 @@ Milestone 1—the read-only terminal foundation—is implemented. Milestone 2 ha
 
 The owner is not a programmer and places every order personally in the browser. No AI session may place, amend, cancel, or resume an order.
 
+### Dedicated account workspaces: September 4, 2026
+
+The former expandable bottom account tray has been replaced by dedicated /orders, /positions, /fills, and /history pages. A slim persistent monitor stays visible on every page, shows live counts and risk context, and opens each workspace with one click. The top navigation and browser Back/Forward controls use stable client-side URLs.
+
+Orders has active/status, market, and strategy filters; summary risk; individual edit/cancel controls; scoped kill controls; and expandable identifiers, parent strategy data, children, and related fills. Positions shows fee-included American entry odds, risk, fees, P&L, contributing fills, and a direct market link. Fills shows recovered and live partial/full executions with raw price, fee-included odds, fee, risk, identifiers, bounded rendering, and direct market links. History separates settlements, completed parent strategies, and the on-demand paginated system audit.
+
+The pages share one in-memory account snapshot and do not add polling, chart libraries, or frontend dependencies. The September 4 production bundle is 125.71 KB JavaScript and 33.41 KB CSS before gzip (41.56 KB and 6.54 KB gzipped). The frontend check completed with 0 errors and one accessibility warning on a keyboard-focusable completed-order row; the production build and full Go test suite passed. A separate simulated read-only executable was browser-tested on port 18080 in light/dark modes; direct routing, navigation, History rows, filters, and the persistent monitor worked. The production server on port 8080 was not restarted and no exchange mutation was sent.
+
+Next account-workspace refinements: add server-backed date/sport/league filtering when histories outgrow the bounded snapshot, add CSV export, and add a retention/archive policy for completed parents and audit records. These are intentionally not on the live critical path yet.
+
 ### Reviewed local release: September 2, 2026
 
 The September 2 usability/resilience batch is reviewed and ready. It adds keyboard-first board navigation, bounded schedule/fill rendering, automatic snapshot and WebSocket recovery, explicit browser connection state, stale-book action blocking, exact fee-inclusive cash sizing, maker/taker previews, iceberg input validation, clickable fills/history, scoped live-cancel confirmations, and a manual read-only account refresh in Settings.
