@@ -132,3 +132,26 @@ func TestAttachMatchedPersistsMarketsAcrossPreferenceFiltering(t *testing.T) {
 		t.Fatalf("preference filtering erased attached markets: %+v", service.snapshot.Events)
 	}
 }
+
+func TestAttachMatchedBuildsSpreadForShortSchoolAcronym(t *testing.T) {
+	service := &Service{snapshot: domain.Snapshot{Events: []domain.CanonicalEvent{{
+		ID: "151", Participants: []domain.Participant{{Name: "Fresno State"}, {Name: "USC"}},
+	}}}}
+	service.attachMatched([]domain.CanonicalMarket{{
+		EventID: "151", MappingStatus: "accepted", Exchange: "kalshi",
+		ExchangeTicker: "KXNCAAFSPREAD-26SEP04FRESUSC-USC22", Type: domain.MarketSpread,
+		Outcome: "USC wins by over 21.5 points", Line: "21.5",
+		YesBid: 4900, YesAsk: 5000, YesBidSize: 100 * domain.Dollar, YesAskSize: 100 * domain.Dollar,
+	}})
+	views := service.snapshot.Events[0].Markets
+	if len(views) != 1 || views[0].Type != domain.MarketSpread || views[0].Away == nil || views[0].Home == nil {
+		t.Fatalf("USC spread was not attached: %+v", views)
+	}
+}
+
+func TestTickerParticipantIndexUsesUniqueShortAcronym(t *testing.T) {
+	event := domain.CanonicalEvent{Participants: []domain.Participant{{Name: "Fresno State", Abbreviation: "Fresno State"}, {Name: "USC", Abbreviation: "USC"}}}
+	if got := tickerParticipantIndex(event, "KXNCAAFSPREAD-26SEP04FRESUSC-USC22"); got != 1 {
+		t.Fatalf("ticker participant = %d", got)
+	}
+}

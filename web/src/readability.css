@@ -1,0 +1,18 @@
+.primary-nav button { font-size: 13px; }
+.search input { font-size: 13px; }
+.sports button, .filters select { font-size: 13px; }
+.filters span, .shortcut-help, .account { font-size: 11px; }
+.board-head { font-size: 11px; }
+.rotations b { font-size: 17px; }
+.teams strong { font-size: 14px; font-weight: 600; }
+.market b { font-size: 13px; font-weight: 650; }
+.market small { font-size: 10px; }
+.market-unlisted { font-size: 11px; }
+.start { font-size: 12px; }
+.start small { font-size: 10px; }
+
+@media (max-width: 850px) {
+  .teams strong { font-size: 13px; }
+  .market b { font-size: 12px; }
+  .market small { font-size: 9px; }
+}

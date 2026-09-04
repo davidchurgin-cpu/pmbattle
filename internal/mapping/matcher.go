@@ -154,6 +154,13 @@ func teamSimilarity(participant domain.Participant, candidate string) int {
 			score = 85
 		default:
 			leftWords, rightWords := tokens(left), tokens(right)
+			// Short, single-token school names such as USC, LSU, UCF, and TCU
+			// are meaningful when they appear as a complete token inside a
+			// longer outcome sentence (for example "USC wins by over 21.5").
+			if len(leftWords) == 1 && len(left) >= 2 && len(left) <= 4 && rightWords[left] {
+				score = 80
+				break
+			}
 			matched := 0
 			for word := range leftWords {
 				if len(word) >= 4 && rightWords[word] {
@@ -181,6 +188,7 @@ func canonicalTeam(value string) string {
 		"tcu": "texas christian", "byu": "brigham young", "nc state": "north carolina state",
 		"louisiana monroe": "ul monroe", "mississippi st": "mississippi state", "hawai i": "hawaii",
 		"miami fl": "miami florida", "miami oh": "miami ohio",
+		"fresno st": "fresno state", "michigan st": "michigan state",
 	}
 	for alias, replacement := range aliases {
 		value = strings.ReplaceAll(value, " "+alias+" ", " "+replacement+" ")

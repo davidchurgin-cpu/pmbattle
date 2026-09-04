@@ -10,6 +10,7 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - Normalized sports, leagues, games, rotation numbers, teams, start times, and scores
 - Conservative Kalshi market matching with uncertain matches hidden from the board
 - College-football team normalization for Kalshi abbreviations such as Miami (FL), Fresno St., and Michigan St., while retaining the two-team mapping requirement
+- Short school-acronym spread outcomes and unique Kalshi ticker suffixes resolve safely (for example USC, LSU, UCF, and TCU)
 - Automatic Kalshi catalog refresh every five minutes so newly listed markets appear without a server restart
 - On-demand Settings review for ambiguous mappings, grouped by related Kalshi contracts; approvals are limited to evidence-backed schedule candidates and rejections persist across refreshes
 - Fixed-point money and fee calculations; no floating point is used for order cost or fees
@@ -40,6 +41,7 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - Order status shown as a colour-coded chip, fills timed as "3m ago", and every money column right-aligned on shared digit widths for fast scanning
 - Slim fixed account monitor with always-visible position/order/fill/history counts and one-click workspace navigation, plus immediate visual alerts for every newly streamed full or partial fill
 - Compact full-width sportsbook rows; genuinely absent market types say `Not listed`, while listed contracts without an offer say `Listed · no offer`
+- Larger sportsbook team, rotation, price, liquidity, navigation, and time text for faster desktop scanning
 - Explicit, accessible side identities across the board, book, and slip: Away blue, Home purple, Over green, and Under amber
 - Sequence-checked in-memory order books with stale-book detection
 - Live browser stream for books, health, fills, orders, positions, and reconciled settlement history

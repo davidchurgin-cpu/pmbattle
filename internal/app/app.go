@@ -1967,7 +1967,10 @@ func marketDistance(market domain.CanonicalMarket) int64 {
 }
 
 func spreadOption(event domain.CanonicalEvent, market domain.CanonicalMarket) *domain.MarketOption {
-	participant := mapping.ParticipantIndex(event, market.Outcome)
+	participant := tickerParticipantIndex(event, market.ExchangeTicker)
+	if participant < 0 {
+		participant = mapping.ParticipantIndex(event, market.Outcome)
+	}
 	if participant < 0 {
 		participant = mapping.ParticipantIndex(event, market.Subtitle)
 	}
@@ -1985,6 +1988,35 @@ func spreadOption(event domain.CanonicalEvent, market domain.CanonicalMarket) *d
 	option.Away.Outcome = event.Participants[0].Name
 	option.Home.Outcome = event.Participants[1].Name
 	return option
+}
+
+// tickerParticipantIndex is a narrow Kalshi fallback for short school
+// acronyms embedded in spread tickers, such as ...-USC22. It is used only
+// after the human-readable outcome and subtitle both fail to identify a team.
+func tickerParticipantIndex(event domain.CanonicalEvent, ticker string) int {
+	part := ticker
+	if index := strings.LastIndex(part, "-"); index >= 0 {
+		part = part[index+1:]
+	}
+	for len(part) > 0 && part[len(part)-1] >= '0' && part[len(part)-1] <= '9' {
+		part = part[:len(part)-1]
+	}
+	if len(part) < 2 {
+		return -1
+	}
+	match := -1
+	for i, participant := range event.Participants {
+		abbreviation := strings.Map(func(r rune) rune {
+			if r >= 'a' && r <= 'z' { return r - ('a' - 'A') }
+			if r >= 'A' && r <= 'Z' { return r }
+			return -1
+		}, participant.Abbreviation)
+		if abbreviation == strings.ToUpper(part) {
+			if match >= 0 { return -1 }
+			match = i
+		}
+	}
+	return match
 }
 
 func totalOption(market domain.CanonicalMarket) *domain.MarketOption {

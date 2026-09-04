@@ -10,7 +10,9 @@ The owner is not a programmer and places every order personally in the browser. 
 
 ### Dedicated account workspaces: September 4, 2026
 
-September 4 spread follow-up: Miami (FL)-Stanford, Fresno St.-USC, and Toledo-Michigan St. were present in Kalshi's public spread catalog but blank on PMBattle because the conservative matcher did not normalize Kalshi's parenthetical state codes or trailing `St.` abbreviation. `canonicalTeam` now maps Miami FL/OH explicitly and treats only a final `St.` token as `State`, preserving names such as St. Louis. Exact regression fixtures for all three affected games pass along with the full Go suite. Rebuild/restart is required before the running port-8080 executable shows the fix.
+September 4 spread follow-up: Miami (FL)-Stanford, Fresno St.-USC, and Toledo-Michigan St. were present in Kalshi's public spread catalog but blank on PMBattle because the conservative matcher did not normalize parenthetical state codes, `St.` inside outcome sentences, or short acronyms such as USC inside longer text. The matcher now handles those cases, and spread construction has a unique ticker-suffix fallback such as `USC22` only when it identifies exactly one scheduled participant. The live read-only server verified Toledo -10.5, USC -21.5, and Miami +24.5 with both sides populated. Exact matcher/display regressions and the full Go suite pass.
+
+The same September 4 usability pass increased the sportsbook's team, rotation, price, liquidity, time, filter, and navigation text sizes. The compact row structure and information density were preserved. The updated production-data/read-only server is running on port 8080; no exchange mutation was sent.
 
 The former expandable bottom account tray has been replaced by dedicated /orders, /positions, /fills, and /history pages. A slim persistent monitor stays visible on every page, shows live counts and risk context, and opens each workspace with one click. The top navigation and browser Back/Forward controls use stable client-side URLs.
 

@@ -49,6 +49,17 @@ func TestParticipantIndexUnderstandsOutcomeText(t *testing.T) {
 	if got := ParticipantIndex(event, "UMass wins"); got != 0 {
 		t.Fatalf("got participant %d", got)
 	}
+	abbreviated := domain.CanonicalEvent{Participants: []domain.Participant{{Name: "Toledo"}, {Name: "Michigan State"}}}
+	if got := ParticipantIndex(abbreviated, "Michigan St. wins by over 20.5 points"); got != 1 {
+		t.Fatalf("abbreviated state outcome got participant %d", got)
+	}
+	fresno := domain.CanonicalEvent{Participants: []domain.Participant{{Name: "Fresno State"}, {Name: "USC"}}}
+	if got := ParticipantIndex(fresno, "Fresno St. wins by over 35.5 points"); got != 0 {
+		t.Fatalf("abbreviated Fresno outcome got participant %d", got)
+	}
+	if got := ParticipantIndex(fresno, "USC wins by over 21.5 points"); got != 1 {
+		t.Fatalf("short school acronym outcome got participant %d", got)
+	}
 }
 
 func TestMatchRejectsAmbiguousDuplicateMatchups(t *testing.T) {
