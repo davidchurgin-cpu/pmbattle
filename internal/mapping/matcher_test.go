@@ -94,6 +94,9 @@ func TestMatchHandlesCommonScheduleAndKalshiTeamAliases(t *testing.T) {
 	}{
 		{away: "UL Monroe", home: "Mississippi State", title: "Louisiana-Monroe vs Mississippi St."},
 		{away: "UNLV", home: "Hawaii", title: "UNLV vs Hawai'i"},
+		{away: "Miami Florida", home: "Stanford", title: "Miami (FL) vs Stanford: Spread"},
+		{away: "Fresno State", home: "USC", title: "Fresno St. vs USC: Spread"},
+		{away: "Toledo", home: "Michigan State", title: "Toledo vs Michigan St.: Spread"},
 	}
 	for _, tt := range tests {
 		events := []domain.CanonicalEvent{{ID: "game", Participants: []domain.Participant{{Name: tt.away}, {Name: tt.home}}}}

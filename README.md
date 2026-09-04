@@ -9,6 +9,7 @@ Order entry is disabled by default. The terminal includes the live schedule, Kal
 - Schedule ingestion from `rawschedule_v2_expanded.xml` every 30 seconds
 - Normalized sports, leagues, games, rotation numbers, teams, start times, and scores
 - Conservative Kalshi market matching with uncertain matches hidden from the board
+- College-football team normalization for Kalshi abbreviations such as Miami (FL), Fresno St., and Michigan St., while retaining the two-team mapping requirement
 - Automatic Kalshi catalog refresh every five minutes so newly listed markets appear without a server restart
 - On-demand Settings review for ambiguous mappings, grouped by related Kalshi contracts; approvals are limited to evidence-backed schedule candidates and rejections persist across refreshes
 - Fixed-point money and fee calculations; no floating point is used for order cost or fees

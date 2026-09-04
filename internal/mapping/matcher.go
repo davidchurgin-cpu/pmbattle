@@ -180,9 +180,16 @@ func canonicalTeam(value string) string {
 		"lsu": "louisiana state", "ucf": "central florida", "smu": "southern methodist",
 		"tcu": "texas christian", "byu": "brigham young", "nc state": "north carolina state",
 		"louisiana monroe": "ul monroe", "mississippi st": "mississippi state", "hawai i": "hawaii",
+		"miami fl": "miami florida", "miami oh": "miami ohio",
 	}
 	for alias, replacement := range aliases {
 		value = strings.ReplaceAll(value, " "+alias+" ", " "+replacement+" ")
+	}
+	// Kalshi commonly abbreviates a trailing "State" as "St." in college
+	// team names (Fresno St., Michigan St., San Jose St.). Restrict this to
+	// the final word so names such as St. Louis continue to mean "Saint".
+	if strings.HasSuffix(value, " st ") {
+		value = strings.TrimSuffix(value, " st ") + " state "
 	}
 	return strings.TrimSpace(value)
 }

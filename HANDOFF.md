@@ -10,6 +10,8 @@ The owner is not a programmer and places every order personally in the browser. 
 
 ### Dedicated account workspaces: September 4, 2026
 
+September 4 spread follow-up: Miami (FL)-Stanford, Fresno St.-USC, and Toledo-Michigan St. were present in Kalshi's public spread catalog but blank on PMBattle because the conservative matcher did not normalize Kalshi's parenthetical state codes or trailing `St.` abbreviation. `canonicalTeam` now maps Miami FL/OH explicitly and treats only a final `St.` token as `State`, preserving names such as St. Louis. Exact regression fixtures for all three affected games pass along with the full Go suite. Rebuild/restart is required before the running port-8080 executable shows the fix.
+
 The former expandable bottom account tray has been replaced by dedicated /orders, /positions, /fills, and /history pages. A slim persistent monitor stays visible on every page, shows live counts and risk context, and opens each workspace with one click. The top navigation and browser Back/Forward controls use stable client-side URLs.
 
 Orders has active/status, market, and strategy filters; summary risk; individual edit/cancel controls; scoped kill controls; and expandable identifiers, parent strategy data, children, and related fills. Positions shows fee-included American entry odds, risk, fees, P&L, contributing fills, and a direct market link. Fills shows recovered and live partial/full executions with raw price, fee-included odds, fee, risk, identifiers, bounded rendering, and direct market links. History separates settlements, completed parent strategies, and the on-demand paginated system audit.
